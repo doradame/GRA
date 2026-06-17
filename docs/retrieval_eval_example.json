@@ -1,0 +1,11 @@
+{
+  "cases": [
+    {
+      "query": "Quali policy richiedono approvazione risk?",
+      "relevant_chunk_ids": ["chunk-policy-x"],
+      "expected_document_ids": ["doc-policy"],
+      "retrieved_chunk_ids": ["chunk-policy-x", "chunk-unrelated"],
+      "retrieved_document_ids": ["doc-policy", "doc-other"]
+    }
+  ]
+}

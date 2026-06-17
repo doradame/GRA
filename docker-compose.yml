@@ -1,0 +1,294 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: igr-backend
+    restart: unless-stopped
+    expose:
+      - "8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/graph_rag_assistant
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-changeme}
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=documents_chunks
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=documents
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-large}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-3072}
+      - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-96}
+      - ENABLE_OCR=${ENABLE_OCR:-false}
+      - MIN_TEXT_CHARS_FOR_OCR=${MIN_TEXT_CHARS_FOR_OCR:-100}
+      - QDRANT_ENABLE_NATIVE_SPARSE=${QDRANT_ENABLE_NATIVE_SPARSE:-false}
+      - QDRANT_DENSE_VECTOR_NAME=${QDRANT_DENSE_VECTOR_NAME:-dense}
+      - QDRANT_SPARSE_VECTOR_NAME=${QDRANT_SPARSE_VECTOR_NAME:-text_sparse}
+      - RETRIEVAL_OVERSAMPLING_FACTOR=${RETRIEVAL_OVERSAMPLING_FACTOR:-3}
+      - RETRIEVAL_LEXICAL_WEIGHT=${RETRIEVAL_LEXICAL_WEIGHT:-0.15}
+      - RETRIEVAL_SCORE_THRESHOLD=${RETRIEVAL_SCORE_THRESHOLD:-0.25}
+      - SECRET_KEY=${SECRET_KEY:-supersecretchangeme}
+      - ACCESS_TOKEN_EXPIRE_MINUTES=60
+      - AUTO_CREATE_TABLES=${AUTO_CREATE_TABLES:-true}
+      - FRONTEND_ADMIN_URL=https://admin.matamune.4nk.eu
+      - LLM_TEMPERATURE=0.1
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - LIBRECHAT_API_KEY=f13d1fed3154ef1206a9278a22574db620d72efaeea07fedb4a1266247b69f96
+    volumes:
+      - ./backend/app:/app/app
+      - ./data/documents:/app/documents
+    depends_on:
+      - db
+      - neo4j
+      - qdrant
+      - minio
+      - redis
+    networks:
+      - igr-network
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: igr-worker
+    restart: unless-stopped
+    command: ["celery", "-A", "app.core.celery_app", "worker", "-l", "info", "-n", "worker@%h", "-c", "1"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/graph_rag_assistant
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-changeme}
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=documents_chunks
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=documents
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-large}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-3072}
+      - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-96}
+      - ENABLE_OCR=${ENABLE_OCR:-false}
+      - MIN_TEXT_CHARS_FOR_OCR=${MIN_TEXT_CHARS_FOR_OCR:-100}
+      - QDRANT_ENABLE_NATIVE_SPARSE=${QDRANT_ENABLE_NATIVE_SPARSE:-false}
+      - QDRANT_DENSE_VECTOR_NAME=${QDRANT_DENSE_VECTOR_NAME:-dense}
+      - QDRANT_SPARSE_VECTOR_NAME=${QDRANT_SPARSE_VECTOR_NAME:-text_sparse}
+      - RETRIEVAL_OVERSAMPLING_FACTOR=${RETRIEVAL_OVERSAMPLING_FACTOR:-3}
+      - RETRIEVAL_LEXICAL_WEIGHT=${RETRIEVAL_LEXICAL_WEIGHT:-0.15}
+      - RETRIEVAL_SCORE_THRESHOLD=${RETRIEVAL_SCORE_THRESHOLD:-0.25}
+      - SECRET_KEY=${SECRET_KEY:-supersecretchangeme}
+      - ACCESS_TOKEN_EXPIRE_MINUTES=60
+      - AUTO_CREATE_TABLES=${AUTO_CREATE_TABLES:-true}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./backend/app:/app/app
+      - ./data/documents:/app/documents
+    depends_on:
+      - db
+      - neo4j
+      - qdrant
+      - minio
+      - redis
+    networks:
+      - igr-network
+
+  flower:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: igr-flower
+    restart: unless-stopped
+    command: ["celery", "-A", "app.core.celery_app", "flower", "--port=5555", "--url_prefix=flower"]
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    expose:
+      - "5555"
+    depends_on:
+      - redis
+      - worker
+    networks:
+      - igr-network
+
+  admin:
+    build:
+      context: ./admin
+      dockerfile: Dockerfile
+    container_name: igr-admin
+    restart: unless-stopped
+    expose:
+      - "5173"
+    environment:
+      - VITE_API_URL=https://api.matamune.4nk.eu
+    volumes:
+      - ./admin:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - igr-network
+
+  mcp:
+    build:
+      context: ./mcp_server
+      dockerfile: Dockerfile
+    container_name: igr-mcp
+    restart: unless-stopped
+    expose:
+      - "8000"
+    environment:
+      - BACKEND_URL=http://backend:8000
+      - API_KEY=${MCP_API_KEY:-mcpsecret}
+      - MCP_TRANSPORT=sse
+    depends_on:
+      - backend
+    networks:
+      - igr-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: igr-redis
+    restart: unless-stopped
+    expose:
+      - "6379"
+    networks:
+      - igr-network
+
+  db:
+    image: postgres:16-alpine
+    container_name: igr-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=graph_rag_assistant
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - igr-network
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: igr-neo4j
+    restart: unless-stopped
+    expose:
+      - "7474"
+      - "7687"
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-changeme}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+    volumes:
+      - ./data/neo4j/data:/data
+      - ./data/neo4j/logs:/logs
+    networks:
+      - igr-network
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: igr-qdrant
+    restart: unless-stopped
+    expose:
+      - "6333"
+      - "6334"
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+    networks:
+      - igr-network
+
+  minio:
+    image: minio/minio:latest
+    container_name: igr-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    expose:
+      - "9000"
+      - "9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - ./data/minio:/data
+    networks:
+      - igr-network
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: igr-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy/data:/data
+      - ./data/caddy/config:/config
+    depends_on:
+      - backend
+      - admin
+      - librechat
+    networks:
+      - igr-network
+
+  librechat:
+    image: ghcr.io/danny-avila/librechat-dev:latest
+    container_name: igr-librechat
+    restart: unless-stopped
+    expose:
+      - "3080"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3080
+      - MONGO_URI=mongodb://mongo:27017/LibreChat
+      - MEILI_HOST=http://meilisearch:7700
+      - OPENAI_API_KEY=user_provided
+      - OPENAI_MODELS=gpt-4o-mini,gpt-4o
+      - DEBUG_OPENAI=false
+      - BALANCE_MODE=false
+      - ALLOW_REGISTRATION=true
+      - JWT_SECRET=Rick&Morthy_Vanilla_Deca_1978
+      - JWT_REFRESH_SECRET=c87453af9d74f1aa8c8b8053572372859372d26ea0db5633b27a1e4158e92f68
+      - CREDS_KEY=fad76165463863c26f6368e3901b94e0b423a3886dc8789986d7a9eec53adda1
+      - CREDS_IV=9e36bdde417089cf9a6eeb833a3b73d2
+    volumes:
+      - ./librechat/librechat.env:/app/.env:ro
+      - ./librechat/librechat.yaml:/app/librechat.yaml:ro
+    depends_on:
+      - mongo
+      - meilisearch
+      - backend
+    networks:
+      - igr-network
+
+  mongo:
+    image: mongo:7
+    container_name: igr-mongo
+    restart: unless-stopped
+    volumes:
+      - ./data/mongo:/data/db
+    networks:
+      - igr-network
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.9
+    container_name: igr-meilisearch
+    restart: unless-stopped
+    environment:
+      - MEILI_NO_ANALYTICS=true
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-changeme}
+    volumes:
+      - ./data/meilisearch:/meili_data
+    networks:
+      - igr-network
+
+networks:
+  igr-network:
+    driver: bridge

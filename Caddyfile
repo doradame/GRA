@@ -1,0 +1,23 @@
+admin.matamune.4nk.eu {
+    reverse_proxy admin:5173
+}
+
+api.matamune.4nk.eu {
+    reverse_proxy backend:8000
+}
+
+chat.matamune.4nk.eu {
+    reverse_proxy librechat:3080
+}
+
+mcp.matamune.4nk.eu {
+    reverse_proxy mcp:8000
+}
+
+flower.matamune.4nk.eu {
+    reverse_proxy flower:5555
+}
+
+matamune.4nk.eu {
+    redir https://admin.matamune.4nk.eu{uri}
+}
