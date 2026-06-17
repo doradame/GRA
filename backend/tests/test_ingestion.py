@@ -1,4 +1,13 @@
-from app.services.ingestion import _infer_section_title, _safe_filename, _stable_uuid, _token_count
+from types import SimpleNamespace
+
+from app.services.ingestion import (
+    _find_chunk_span,
+    _infer_section_title,
+    _pages_for_span,
+    _safe_filename,
+    _stable_uuid,
+    _token_count,
+)
 
 
 def test_stable_uuid_is_deterministic_and_changes_with_parts():
@@ -19,3 +28,17 @@ def test_token_count_and_section_title_helpers():
     assert _token_count("hello world", "text-embedding-3-large") > 0
     assert _infer_section_title("TERMS AND CONDITIONS\n\nBody text.") == "TERMS AND CONDITIONS"
     assert _infer_section_title("This is a normal sentence.") is None
+
+
+def test_chunk_span_and_page_mapping_helpers():
+    text = "page one text\n\npage two text"
+    start, end = _find_chunk_span(text, "page two", 0)
+
+    assert text[start:end] == "page two"
+    assert (start, end) == (15, 23)
+
+    pages = [
+        SimpleNamespace(page=1, start_char=0, end_char=13),
+        SimpleNamespace(page=2, start_char=15, end_char=len(text)),
+    ]
+    assert _pages_for_span(pages, start, end) == (2, 2)

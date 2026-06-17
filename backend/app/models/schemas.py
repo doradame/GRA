@@ -108,6 +108,15 @@ class Citation(BaseModel):
     filename: str
     text: str
     score: float
+    chunk_index: Optional[int] = None
+    section_title: Optional[str] = None
+    char_start: Optional[int] = None
+    char_end: Optional[int] = None
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
+    document_page_count: Optional[int] = None
+    quote: Optional[str] = None
+    reference: Optional[str] = None
 
 
 class ChatResponse(BaseModel):

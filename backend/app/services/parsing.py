@@ -11,12 +11,21 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class PageText:
+    page: int
+    text: str
+    start_char: int
+    end_char: int
+
+
+@dataclass
 class ParsingResult:
     text: str
     mime_type: str
     parser: str
     page_count: int | None = None
     ocr_used: bool = False
+    pages: List[PageText] | None = None
 
 
 def extract_text(filename: str, data: bytes) -> str:
@@ -33,7 +42,7 @@ def extract_document(
     lower_name = filename.lower()
 
     if mime == "application/pdf" or lower_name.endswith(".pdf"):
-        text, page_count = _extract_pdf(data)
+        text, page_count, pages = _extract_pdf(data)
         if enable_ocr and len(text.strip()) < min_text_chars_for_ocr:
             ocr_text = _extract_pdf_ocr(data)
             if ocr_text.strip():
@@ -44,7 +53,7 @@ def extract_document(
                     page_count=page_count,
                     ocr_used=True,
                 )
-        return ParsingResult(text=text, mime_type=mime, parser="pypdf", page_count=page_count)
+        return ParsingResult(text=text, mime_type=mime, parser="pypdf", page_count=page_count, pages=pages)
     if mime in (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/msword",
@@ -60,14 +69,20 @@ def extract_document(
     return ParsingResult(text=data.decode("utf-8", errors="ignore"), mime_type=mime, parser="text_fallback")
 
 
-def _extract_pdf(data: bytes) -> tuple[str, int]:
+def _extract_pdf(data: bytes) -> tuple[str, int, List[PageText]]:
     reader = PdfReader(io.BytesIO(data))
     parts: List[str] = []
-    for page in reader.pages:
+    pages: List[PageText] = []
+    cursor = 0
+    for page_index, page in enumerate(reader.pages, start=1):
         text = page.extract_text()
         if text:
+            start_char = cursor
             parts.append(text)
-    return "\n\n".join(parts), len(reader.pages)
+            cursor += len(text)
+            pages.append(PageText(page=page_index, text=text, start_char=start_char, end_char=cursor))
+            cursor += 2
+    return "\n\n".join(parts), len(reader.pages), pages
 
 
 def _extract_pdf_ocr(data: bytes) -> str:

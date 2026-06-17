@@ -6,7 +6,7 @@
 2. Celery starts `process_document()` with task metadata.
 3. The pipeline creates or resumes an `IngestionJob`, cleans derived artifacts, then moves through `parsing`, `chunking`, `embedding`, `vector_indexing`, and `graph_indexing`.
 4. Chunk IDs and Qdrant point IDs are deterministic, so retries rebuild instead of duplicating.
-5. Qdrant payloads include `user_id`, `document_id`, `text_hash`, `token_count`, `section_title`, and status metadata.
+5. Qdrant payloads include `user_id`, `document_id`, `text_hash`, `token_count`, `section_title`, `char_start`, `char_end`, `page_start`, `page_end`, `document_page_count`, and status metadata.
 6. Neo4j receives document, chunk, entity, and relation data after vector indexing succeeds.
 
 ## Recovery Rules

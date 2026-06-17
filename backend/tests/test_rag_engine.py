@@ -1,4 +1,4 @@
-from app.services.rag_engine import _diversify_results, _rerank_hybrid
+from app.services.rag_engine import _diversify_results, _extract_quote, _format_reference, _rerank_hybrid
 
 
 def test_diversify_results_drops_near_duplicate_chunks():
@@ -23,3 +23,19 @@ def test_rerank_hybrid_adds_lexical_signal():
 
     assert reranked[0]["payload"]["text"] == "risk approval required for policy x"
     assert reranked[0]["lexical_score"] > reranked[1]["lexical_score"]
+
+
+def test_reference_and_quote_helpers_prefer_human_readable_metadata():
+    payload = {
+        "filename": "manuale.pdf",
+        "page_start": 4,
+        "page_end": 5,
+        "char_start": 1200,
+        "char_end": 1800,
+        "document_page_count": 20,
+        "section_title": "CONDIZIONI",
+        "index": 2,
+    }
+
+    assert _format_reference(payload) == "manuale.pdf, pagine 4-5"
+    assert _extract_quote("  Una frase   con spazi\nmultipli.  ") == "Una frase con spazi multipli."

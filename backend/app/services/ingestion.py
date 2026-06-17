@@ -79,6 +79,28 @@ def _infer_section_title(text: str) -> str | None:
     return None
 
 
+def _find_chunk_span(text: str, chunk: str, start_from: int = 0) -> tuple[int, int]:
+    start = text.find(chunk, start_from)
+    if start == -1 and start_from:
+        start = text.find(chunk)
+    if start == -1:
+        return start_from, start_from + len(chunk)
+    return start, start + len(chunk)
+
+
+def _pages_for_span(pages: list | None, start: int, end: int) -> tuple[int | None, int | None]:
+    if not pages:
+        return None, None
+    matching = [
+        page.page
+        for page in pages
+        if page.end_char >= start and page.start_char <= end
+    ]
+    if not matching:
+        return None, None
+    return min(matching), max(matching)
+
+
 async def _set_document_status(
     db: AsyncSession,
     doc: Document,
@@ -304,10 +326,14 @@ async def process_document(
 
                 qdrant_points = []
                 chunk_records = []
+                span_cursor = 0
                 for idx, (chunk_text_content, embedding) in enumerate(zip(chunks, embeddings)):
                     text_hash = _hash_text(chunk_text_content)
                     token_count = _token_count(chunk_text_content, settings.embedding_model)
                     section_title = _infer_section_title(chunk_text_content)
+                    span_start, span_end = _find_chunk_span(text, chunk_text_content, span_cursor)
+                    span_cursor = span_end
+                    page_start, page_end = _pages_for_span(parsed.pages, span_start, span_end)
                     chunk_id = _stable_uuid("chunk", document_id, idx, text_hash)
                     qdrant_id = chunk_id
 
@@ -320,6 +346,10 @@ async def process_document(
                             text_hash=text_hash,
                             token_count=token_count,
                             section_title=section_title,
+                            char_start=span_start,
+                            char_end=span_end,
+                            page_start=page_start,
+                            page_end=page_end,
                             qdrant_point_id=qdrant_id,
                         )
                     )
@@ -341,6 +371,11 @@ async def process_document(
                                 "text_hash": text_hash,
                                 "token_count": token_count,
                                 "section_title": section_title,
+                                "char_start": span_start,
+                                "char_end": span_end,
+                                "page_start": page_start,
+                                "page_end": page_end,
+                                "document_page_count": parsed.page_count,
                                 "status": STATUS_COMPLETED,
                             },
                         )

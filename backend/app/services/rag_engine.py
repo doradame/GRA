@@ -19,7 +19,9 @@ SYSTEM_PROMPT = """Sei un assistente conversazionale che aiuta l'utente usando i
 Regole:
 - Per domande sui documenti, usa SOLO le informazioni presenti nel contesto fornito.
 - Se la risposta si trova nei documenti, rispondi in modo completo, chiaro e naturale; non limitarti a una frase secca.
-- Cita i file rilevanti quando è utile, senza esagerare.
+- Quando citi una fonte, usa riferimenti leggibili: file, pagina se disponibile, sezione/parte se disponibile.
+- Non citare mai ID tecnici di chunk o UUID nella risposta all'utente.
+- Quando utile, includi un breve virgolettato dal contesto.
 - Se l'utente fa un saluto o una domanda generale (es. "chi sei?", "ciao"), rispondi normalmente in modo cordiale.
 - Se l'utente chiede qualcosa non presente nei documenti, spiega gentilmente che non hai informazioni al riguardo nella knowledge base.
 """
@@ -57,6 +59,9 @@ async def build_context(
     context_parts = []
     for r in filtered:
         payload = r["payload"]
+        chunk_index = payload.get("index")
+        reference = _format_reference(payload)
+        quote = _extract_quote(payload.get("text", ""))
         citations.append(
             Citation(
                 chunk_id=payload.get("chunk_id", ""),
@@ -64,10 +69,19 @@ async def build_context(
                 filename=payload.get("filename", ""),
                 text=payload.get("text", ""),
                 score=r["score"],
+                chunk_index=chunk_index if isinstance(chunk_index, int) else None,
+                section_title=payload.get("section_title") or None,
+                char_start=payload.get("char_start"),
+                char_end=payload.get("char_end"),
+                page_start=payload.get("page_start"),
+                page_end=payload.get("page_end"),
+                document_page_count=payload.get("document_page_count"),
+                quote=quote,
+                reference=reference,
             )
         )
         context_parts.append(
-            f"---\nFile: {payload.get('filename')}\nChunk: {payload.get('chunk_id')}\n{payload.get('text')}"
+            f"---\nFonte: {reference}\nEstratto: \"{quote}\"\nTesto completo:\n{payload.get('text')}"
         )
 
     # Optional graph expansion: pick top entity names from retrieved chunks and expand
@@ -82,6 +96,31 @@ async def build_context(
 
     context = "\n".join(context_parts) + "\n" + graph_context
     return context, citations
+
+
+def _format_reference(payload: dict) -> str:
+    filename = payload.get("filename") or "documento"
+    parts = [str(filename)]
+    page_start = payload.get("page_start")
+    page_end = payload.get("page_end")
+    if isinstance(page_start, int):
+        if isinstance(page_end, int) and page_end != page_start:
+            parts.append(f"pagine {page_start}-{page_end}")
+        else:
+            parts.append(f"pagina {page_start}")
+    elif payload.get("section_title"):
+        parts.append(f"sezione: {payload.get('section_title')}")
+    elif isinstance(payload.get("index"), int):
+        parts.append(f"parte {payload.get('index') + 1}")
+    return ", ".join(parts)
+
+
+def _extract_quote(text: str, max_chars: int = 320) -> str:
+    clean = re.sub(r"\s+", " ", str(text)).strip()
+    if len(clean) <= max_chars:
+        return clean
+    excerpt = clean[:max_chars].rsplit(" ", 1)[0].rstrip(".,;:")
+    return f"{excerpt}..."
 
 
 async def _extract_top_entities(query: str) -> List[str]:

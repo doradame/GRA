@@ -56,6 +56,10 @@ class Chunk(Base):
     text_hash = Column(String(64), nullable=True, index=True)
     token_count = Column(Integer, nullable=True)
     section_title = Column(String(512), nullable=True)
+    char_start = Column(Integer, nullable=True)
+    char_end = Column(Integer, nullable=True)
+    page_start = Column(Integer, nullable=True)
+    page_end = Column(Integer, nullable=True)
     qdrant_point_id = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
