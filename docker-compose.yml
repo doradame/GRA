@@ -38,7 +38,7 @@ services:
       - LLM_TEMPERATURE=0.1
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - LIBRECHAT_API_KEY=f13d1fed3154ef1206a9278a22574db620d72efaeea07fedb4a1266247b69f96
+      - LIBRECHAT_API_KEY=${LIBRECHAT_BACKEND_API_KEY:-f13d1fed3154ef1206a9278a22574db620d72efaeea07fedb4a1266247b69f96}
     volumes:
       - ./backend/app:/app/app
       - ./data/documents:/app/documents
@@ -223,6 +223,8 @@ services:
     image: caddy:2-alpine
     container_name: igr-caddy
     restart: unless-stopped
+    environment:
+      - MCP_API_KEY=${MCP_API_KEY:-mcpsecret}
     ports:
       - "80:80"
       - "443:443"
@@ -258,6 +260,7 @@ services:
       - JWT_REFRESH_SECRET=c87453af9d74f1aa8c8b8053572372859372d26ea0db5633b27a1e4158e92f68
       - CREDS_KEY=fad76165463863c26f6368e3901b94e0b423a3886dc8789986d7a9eec53adda1
       - CREDS_IV=9e36bdde417089cf9a6eeb833a3b73d2
+      - LIBRECHAT_BACKEND_API_KEY=${LIBRECHAT_BACKEND_API_KEY:-f13d1fed3154ef1206a9278a22574db620d72efaeea07fedb4a1266247b69f96}
     volumes:
       - ./librechat/librechat.env:/app/.env:ro
       - ./librechat/librechat.yaml:/app/librechat.yaml:ro

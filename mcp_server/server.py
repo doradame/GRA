@@ -21,8 +21,19 @@ async def call_backend(method: str, path: str, json_data: dict = None, params: d
 
 
 @mcp.tool()
-async def query_knowledge_base(query: str) -> str:
-    """Interroga la knowledge base assicurativa con una domanda in linguaggio naturale."""
+async def search_knowledge_base(query: str, top_k: int = 8) -> str:
+    """Cerca nella knowledge base e restituisce chunk, file, score e metadati senza generare una risposta."""
+    data = await call_backend(
+        "GET",
+        "/api/v1/kb/search",
+        params={"query": query, "top_k": max(1, min(top_k, 24))},
+    )
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def answer_knowledge_base(query: str) -> str:
+    """Risponde usando la knowledge base e restituisce anche le citazioni usate."""
     data = await call_backend(
         "POST",
         "/api/v1/chat/completions",
@@ -35,6 +46,12 @@ async def query_knowledge_base(query: str) -> str:
     citations = data.get("citations", [])
     result = {"answer": answer, "citations": citations}
     return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def query_knowledge_base(query: str) -> str:
+    """Compatibilità: alias di answer_knowledge_base."""
+    return await answer_knowledge_base(query)
 
 
 @mcp.tool()

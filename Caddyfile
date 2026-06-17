@@ -11,7 +11,11 @@ chat.matamune.4nk.eu {
 }
 
 mcp.matamune.4nk.eu {
-    reverse_proxy mcp:8000
+    @authorized header X-MCP-API-Key {$MCP_API_KEY}
+    handle @authorized {
+        reverse_proxy mcp:8000
+    }
+    respond 401
 }
 
 flower.matamune.4nk.eu {

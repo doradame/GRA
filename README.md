@@ -86,8 +86,12 @@ LibreChat è già configurato tramite `librechat/librechat.yaml` per usare il ba
 ## MCP Server
 
 Il server MCP è esposto su `https://mcp.matamune.4nk.eu/sse`.
+L'accesso pubblico richiede l'header `X-MCP-API-Key` configurato in `MCP_API_KEY`.
+LibreChat usa invece il server MCP interno Docker (`http://mcp:8000/sse`).
 
 Tools disponibili:
+- `search_knowledge_base(query, top_k)`
+- `answer_knowledge_base(query)`
 - `query_knowledge_base(query)`
 - `explore_graph(entity)`
 

@@ -1,15 +1,22 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, get_current_user_or_mcp
 from app.models.models import User, Document, Chunk
 from app.services.graph_store import graph_store
 from app.services.vector_store import vector_store
 from app.services.api_usage import get_api_usage
+from app.services.rag_engine import build_context
 
 router = APIRouter()
+
+
+def _retrieval_user_id(user: User) -> str | None:
+    if user.email in {"mcp@internal", "librechat@matamune.4nk.eu"}:
+        return None
+    return str(user.id)
 
 
 @router.get("/info")
@@ -49,3 +56,22 @@ async def knowledge_base_api_usage(
 ):
     """Return OpenAI API usage counters tracked during ingestion."""
     return get_api_usage()
+
+
+@router.get("/search")
+async def search_knowledge_base(
+    query: str = Query(..., min_length=1),
+    top_k: int = Query(default=8, ge=1, le=24),
+    current_user: User = Depends(get_current_user_or_mcp),
+):
+    """Return retrieved knowledge-base chunks without generating a final answer."""
+    _, citations = await build_context(
+        query,
+        top_k=top_k,
+        user_id=_retrieval_user_id(current_user),
+    )
+    return {
+        "query": query,
+        "top_k": top_k,
+        "results": [citation.model_dump() for citation in citations],
+    }
