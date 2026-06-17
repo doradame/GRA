@@ -8,6 +8,7 @@ from app.services.api_usage import increment_extraction_calls
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+_JSON_SCHEMA_SUPPORTED: bool | None = None
 
 EXTRACTION_SCHEMA = {
     "name": "knowledge_graph_extraction",
@@ -73,6 +74,8 @@ def _canonical_entity_id(name: str, entity_type: str) -> str:
 
 
 async def extract_entities_relations(text: str) -> Dict[str, List[Dict[str, Any]]]:
+    global _JSON_SCHEMA_SUPPORTED
+
     if not settings.openai_api_key or settings.openai_api_key.startswith("sk-test"):
         return {"entities": [], "relations": []}
 
@@ -81,22 +84,35 @@ async def extract_entities_relations(text: str) -> Dict[str, List[Dict[str, Any]
 
     prompt = EXTRACTION_PROMPT.replace("{text}", text[:8000])
     try:
-        try:
+        response = None
+        if _JSON_SCHEMA_SUPPORTED is not False:
+            try:
+                response = await client.chat.completions.create(
+                    model=settings.openai_model,
+                    messages=[
+                        {"role": "system", "content": "Estrai solo conoscenza verificabile dal testo."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.0,
+                    response_format={"type": "json_schema", "json_schema": EXTRACTION_SCHEMA},
+                )
+                _JSON_SCHEMA_SUPPORTED = True
+            except BadRequestError:
+                _JSON_SCHEMA_SUPPORTED = False
+                logger.warning("Structured extraction unsupported by model/API; using json_object mode for this worker")
+
+        if response is None:
             response = await client.chat.completions.create(
                 model=settings.openai_model,
                 messages=[
-                    {"role": "system", "content": "Estrai solo conoscenza verificabile dal testo."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.0,
-                response_format={"type": "json_schema", "json_schema": EXTRACTION_SCHEMA},
-            )
-        except BadRequestError:
-            logger.warning("Structured extraction unsupported by model/API; falling back to json_object mode")
-            response = await client.chat.completions.create(
-                model=settings.openai_model,
-                messages=[
-                    {"role": "system", "content": "Restituisci solo JSON valido."},
+                    {
+                        "role": "system",
+                        "content": (
+                            "Restituisci solo JSON valido con questa forma esatta: "
+                            '{"entities":[{"id":"...","name":"...","type":"..."}],'
+                            '"relations":[{"source_id":"...","target_id":"...","type":"...","properties":{}}]}.'
+                        ),
+                    },
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.0,
@@ -137,11 +153,27 @@ def _safe_parse_json(text: str) -> Dict[str, Any] | None:
 
 
 def _normalize_extraction(data: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+    if not isinstance(data, dict):
+        logger.warning("LLM extraction response is not a JSON object: %s", type(data).__name__)
+        return {"entities": [], "relations": []}
+
     entities = []
     id_map: Dict[str, str] = {}
     seen_entities = set()
 
-    for raw in data.get("entities", []):
+    raw_entities = data.get("entities", [])
+    if isinstance(raw_entities, dict):
+        raw_entities = list(raw_entities.values())
+    if not isinstance(raw_entities, list):
+        logger.warning("LLM extraction entities field is not a list: %s", type(raw_entities).__name__)
+        raw_entities = []
+
+    for raw in raw_entities:
+        if isinstance(raw, str):
+            raw = {"name": raw, "type": "Unknown"}
+        if not isinstance(raw, dict):
+            logger.debug("Skipping malformed extracted entity: %r", raw)
+            continue
         name = str(raw.get("name", "")).strip()
         entity_type = str(raw.get("type", "Unknown")).strip() or "Unknown"
         if not name:
@@ -157,7 +189,15 @@ def _normalize_extraction(data: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]
     relations = []
     seen_relations = set()
     valid_ids = {entity["id"] for entity in entities}
-    for raw in data.get("relations", []):
+    raw_relations = data.get("relations", [])
+    if not isinstance(raw_relations, list):
+        logger.warning("LLM extraction relations field is not a list: %s", type(raw_relations).__name__)
+        raw_relations = []
+
+    for raw in raw_relations:
+        if not isinstance(raw, dict):
+            logger.debug("Skipping malformed extracted relation: %r", raw)
+            continue
         source_id = id_map.get(str(raw.get("source_id")), str(raw.get("source_id", "")))
         target_id = id_map.get(str(raw.get("target_id")), str(raw.get("target_id", "")))
         relation_type = str(raw.get("type", "RELATED_TO")).strip() or "RELATED_TO"

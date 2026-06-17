@@ -365,6 +365,7 @@ async def process_document(
                 logger.info("[ingestion] Document node added to graph: document_id=%s", document_id)
 
                 progress_step = max(1, len(chunks) // 20)
+                max_graph_extraction_chunks = max(0, settings.max_graph_extraction_chunks)
                 for idx, chunk_text_content in enumerate(chunks):
                     text_hash = _hash_text(chunk_text_content)
                     chunk_id = _stable_uuid("chunk", document_id, idx, text_hash)
@@ -372,8 +373,30 @@ async def process_document(
                     logger.debug("[ingestion] Adding chunk %s/%s to graph for document_id=%s", idx + 1, len(chunks), document_id)
                     graph_store.add_chunk(chunk_id, document_id, chunk_text_content, idx, user_id=user_id)
 
+                    if idx >= max_graph_extraction_chunks:
+                        if idx == max_graph_extraction_chunks:
+                            logger.info(
+                                "[ingestion] Skipping entity extraction after %s chunks for document_id=%s",
+                                max_graph_extraction_chunks,
+                                document_id,
+                            )
+                        if (idx + 1) % progress_step == 0 or idx + 1 == len(chunks):
+                            graph_progress = 80 + int(((idx + 1) / len(chunks)) * 18)
+                            await _set_document_status(db, doc, STATUS_GRAPH_INDEXING, job=job, progress=graph_progress)
+                        continue
+
                     logger.debug("[ingestion] Extracting entities/relations for chunk %s/%s of document_id=%s", idx + 1, len(chunks), document_id)
-                    extracted = await extract_entities_relations(chunk_text_content)
+                    try:
+                        extracted = await extract_entities_relations(chunk_text_content)
+                    except Exception as extraction_error:
+                        logger.warning(
+                            "[ingestion] Entity extraction failed for chunk %s/%s of document_id=%s: %s",
+                            idx + 1,
+                            len(chunks),
+                            document_id,
+                            extraction_error,
+                        )
+                        extracted = {"entities": [], "relations": []}
                     entities = extracted.get("entities", [])
                     relations = extracted.get("relations", [])
                     logger.debug(

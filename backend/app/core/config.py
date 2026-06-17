@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     embedding_batch_size: int = 96
     enable_ocr: bool = False
     min_text_chars_for_ocr: int = 100
+    max_graph_extraction_chunks: int = 48
     retrieval_oversampling_factor: int = 3
     retrieval_lexical_weight: float = 0.15
     retrieval_score_threshold: float = 0.25
