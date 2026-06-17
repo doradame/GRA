@@ -136,7 +136,8 @@ class GraphStore:
                 rel_type = _sanitize_relation_type(str(rel.get("type", DEFAULT_RELATION_TYPE)))
                 session.run(
                     f"""
-                    MATCH (s:Entity {{id: $source_id}}), (t:Entity {{id: $target_id}})
+                    MATCH (s:Entity {{id: $source_id}})
+                    MATCH (t:Entity {{id: $target_id}})
                     MERGE (s)-[r:{rel_type}]->(t)
                     SET r += $props
                     """,

@@ -21,8 +21,8 @@
 - Run `cd backend && python scripts/evaluate_retrieval.py ../docs/retrieval_eval_example.json --k 5`.
 - Run precision@k, recall@k, and document coverage before changing chunking or embedding defaults.
 - Enable OCR with `ENABLE_OCR=true` only after installing optional OCR runtime dependencies (`pypdfium2`, `pytesseract`, and the system `tesseract` binary).
-- By default, retrieval uses vector search plus local lexical reranking.
-- To enable native Qdrant dense+sparse fusion, set `QDRANT_ENABLE_NATIVE_SPARSE=true`, reset or create a fresh Qdrant collection, then reindex documents. Existing dense-only collections cannot store named sparse vectors without rebuilding.
+- By default, retrieval uses Qdrant dense+sparse fusion plus local lexical reranking.
+- Existing dense-only Qdrant collections must be reset or recreated before reindexing with `QDRANT_ENABLE_NATIVE_SPARSE=true`.
 - Run Qdrant integration smoke tests with `RUN_INTEGRATION_TESTS=1 pytest tests/test_qdrant_integration.py` while Qdrant is reachable at `QDRANT_URL` or `http://localhost:6333`.
 
 ## End-to-End Smoke Test
