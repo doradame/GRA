@@ -9,7 +9,7 @@ celery_app = Celery(
     "graph_rag_assistant",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["app.tasks.ingestion"],
+    include=["app.tasks.ingestion", "app.tasks.entity_resolution"],
 )
 
 celery_app.conf.update(

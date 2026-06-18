@@ -17,7 +17,7 @@ from app.services.embeddings import embed_texts
 from app.services.vector_store import vector_store
 from app.services.graph_store import graph_store
 from app.services.extraction import extract_entities_relations
-from app.services.sparse_vectors import build_sparse_vector
+from app.services.sparse_vectors import build_sparse_vector, tokenize_sparse
 
 logger = logging.getLogger(__name__)
 
@@ -316,6 +316,10 @@ async def process_document(
                 if not chunks:
                     raise ValueError("Document text did not produce any chunks")
 
+                # Build token corpus for BM25 sparse vector IDF computation.
+                corpus_tokens = [tokenize_sparse(chunk) for chunk in chunks]
+                logger.debug("[ingestion] Built sparse corpus with %s tokenized chunks", len(corpus_tokens))
+
                 # Embed chunks
                 await _set_document_status(db, doc, STATUS_EMBEDDING, job=job)
                 logger.info("[ingestion] Generating embeddings for %s chunks of document_id=%s", len(chunks), document_id)
@@ -359,7 +363,7 @@ async def process_document(
                             id=qdrant_id,
                             vector=vector_store.build_point_vector(
                                 embedding,
-                                build_sparse_vector(chunk_text_content),
+                                build_sparse_vector(chunk_text_content, corpus_tokens),
                             ),
                             payload={
                                 "chunk_id": chunk_id,
