@@ -2,39 +2,68 @@
 
 **Obiettivo:** Trasformare l'attuale pipeline di ingestion e retrieval da un sistema RAG documentale di base a un ecosistema GraphRAG agentico e scalabile, superando i limiti di estrazione parziale e migliorando la precisione del retrieval tramite vettori sparsi avanzati e navigazione topologica del grafo.
 
+**Stato attuale (aggiornato al 18/06/2026):**
+* ✅ Fase 1 completata — vettori sparsi BM25 + entity resolution fuzzy con APOC.
+* ✅ Fase 2 completata — estrazione entità con GLiNER su tutti i chunk, relazioni solo via LLM.
+* 🔄 Fase 3 in corso / da pianificare — orchestrazione agentica con LangGraph, Local/Global Graph Search.
+
 ---
 
-## Fase 1: Ottimizzazione Fondamenta Dati (Vector & Graph Store)
+## Fase 1: Ottimizzazione Fondamenta Dati (Vector & Graph Store) ✅ COMPLETATA
 
-Attualmente il sistema soffre di una gestione ingenua dei vettori sparsi e di una frammentazione delle entità nel grafo (deduplicazione solo per hash esatto).
+Risolta la gestione ingenua dei vettori sparsi e la frammentazione delle entità nel grafo.
 
 ### 1.1. Refactoring Vettori Sparsi (Sparse Embeddings)
-L'attuale generazione in `services/sparse_vectors.py` basata su regex e 21 stopwords hardcoded non è adeguata per la lingua italiana e per domini complessi.
-* **Azione:** Sostituire l'algoritmo attuale.
-* **Implementazione:** Integrare la libreria `ranx` o un'implementazione BM25 robusta via `scikit-learn` / `NLTK` all'interno del worker Celery.
-* **Requisito:** Mantenere la compatibilità in fase di upsert con il payload richiesto da Qdrant per la ricerca ibrida (RRF).
+* **Stato:** Completato in `services/sparse_vectors.py`.
+* **Implementazione:** Algoritmo BM25-like con tokenizzazione NLTK (con fallback robusto), stopwords inglesi/italiane, e hashing BLAKE2b dei token in bucket sparsi compatibili con Qdrant.
+* **Dettagli:**
+    * Parametri BM25 standard: `k1=1.5`, `b=0.75`.
+    * IDF calcolato sul corpus dei chunk del documento in fase di indexing.
+    * Durante il retrieval, se il corpus non è disponibile, si usa solo il TF pesato.
+    * Vettore normalizzato L2 prima dell'upsert in Qdrant.
+* **Requisito soddisfatto:** Compatibilità mantenuta con il payload Qdrant per ricerca ibrida RRF.
 
 ### 1.2. Entity Resolution Dinamica (Fuzzy Merging)
-Risolvere la frammentazione dei nodi in Neo4j dovuta a minime variazioni nominali (es. "Banca d'Italia" vs "Banca d Italia").
-* **Azione:** Creare un nuovo task Celery asincrono e schedulato (es. notturno).
-* **Implementazione:** 1. Estrarre le entità da Neo4j e calcolare gli embedding dei nomi.
-    2. Calcolare la similarità del coseno tra entità dello stesso tipo.
-    3. Per valori di similarità `> 0.93`, eseguire il merging.
-* **Cypher Reference:** Utilizzare la procedura APOC `CALL apoc.refactor.mergeNodes(nodes, {properties: 'combine', mergeRels: true})` per fondere i nodi preservando tutti gli archi `MENTIONS` esistenti.
+* **Stato:** Completato in `services/entity_resolution.py` e `tasks/entity_resolution.py`.
+* **Implementazione:**
+    1. Task Celery `resolve_entities_task` raggruppa le entità Neo4j per tipo.
+    2. Calcola gli embedding dei nomi con `embed_texts` (batch 64).
+    3. Calcola la matrice di similarità del coseno.
+    4. Per valori `> 0.93`, raggruppa le entità con Union-Find e le fonde tramite APOC.
+* **Cypher Reference:** `CALL apoc.refactor.mergeNodes(nodes, {properties: 'combine', mergeRels: true, preserveExistingProperties: true})` preserva tutti gli archi `MENTIONS` e le proprietà.
+* **Fix correlato:** `services/graph_store.py` ora normalizza `e.name` quando APOC lo combina in array dopo il merge.
 
 ---
 
-## Fase 2: Sblocco Estrazione Grafo Completa
+## Fase 2: Sblocco Estrazione Grafo Completa ✅ COMPLETATA
 
-Il vincolo `max_graph_extraction_chunks` limitato ai primi 48 chunk per documento genera un grafo "monco". Dobbiamo separare l'estrazione delle entità (NER) da quella delle relazioni per ottimizzare tempi e costi.
+Separata l'estrazione delle entità (NER) da quella delle relazioni per ottimizzare tempi e costi.
 
 ### 2.1. Estrazione Entità via SLM Locale
-* **Azione:** Modificare `services/extraction.py` per rimuovere il limite dei 48 chunk per il riconoscimento delle entità.
-* **Implementazione:** Integrare **GLiNER** (Generalist and Lightweight Model for Named Entity Recognition). Far girare questo SLM localmente nel worker Celery per estrarre entità (Sistemi, Persone, Organizzazioni) da *tutti* i chunk del documento ad alta velocità.
+* **Stato:** Completato in `services/gliner_extraction.py` e integrato in `services/ingestion.py`.
+* **Implementazione:**
+    * Integrato **GLiNER** (`gliner-community/gliner_small-v2.5`) come modello NER locale nel worker Celery.
+    * Le entità vengono estratte da **tutti i chunk** del documento, senza più il limite dei 48 chunk.
+    * Label configurabili via `GLINER_LABELS` (default: Persona, Organizzazione, Luogo, Prodotto, Concetto, Regola, Requisito, Rischio, Data, Numero, Sistema).
+    * Soglia di confidenza configurabile via `GLINER_THRESHOLD` (default `0.5`).
+    * Il modello è caricato in modo lazy e cacheato nel processo worker (`_model`).
+    * Le entità ottenute usano lo stesso ID canonico (`SHA256(tipo:nome)`) usato dall'estrazione legacy per garantire consistenza con il grafo.
 
-### 2.2. Estrazione Relazioni Ottimizzata (LLM via Proxy)
-* **Azione:** Limitare l'uso dei modelli generativi di classe GPT unicamente alla deduzione delle relazioni logiche.
-* **Implementazione:** Passare al LLM il testo del chunk *insieme* alla lista pre-compilata delle entità trovate da GLiNER. Il prompt richiederà esclusivamente di mappare i collegamenti (es. "A dipende da B"). Continueremo a veicolare queste chiamate attraverso la nostra infrastruttura **LiteLLM** per standardizzare l'accesso ai modelli, tracciare i token e gestire eventuali fallback.
+### 2.2. Estrazione Relazioni Ottimizzata (LLM)
+* **Stato:** Completato in `services/extraction.py` con la nuova funzione `extract_relations`.
+* **Implementazione:**
+    * L'LLM (OpenAI tramite `AsyncOpenAI`) riceve solo il testo del chunk e l'elenco delle entità già identificate da GLiNER.
+    * Il prompt `RELATION_PROMPT` richiede esclusivamente di mappare le relazioni logiche tra le entità fornite.
+    * Il limite di costo `MAX_RELATION_EXTRACTION_CHUNKS` (default 48, fallback su `MAX_GRAPH_EXTRACTION_CHUNKS`) si applica **solo** alle relazioni LLM, non più alle entità.
+    * In modalità demo (`OPENAI_API_KEY` assente o `sk-test`) le relazioni sono vuote.
+    * Il codice legacy `extract_entities_relations` è mantenuto per retrocompatibilità.
+
+### File coinvolti Fase 2
+* `backend/app/services/gliner_extraction.py` — nuovo modulo GLiNER.
+* `backend/app/services/extraction.py` — `extract_relations` + prompt specializzato.
+* `backend/app/services/ingestion.py` — pipeline aggiornata per usare GLiNER su tutti i chunk e LLM solo per relazioni.
+* `backend/app/services/graph_store.py` — fix `name` array post-merge APOC.
+* `backend/requirements.txt` — dipendenze GLiNER e pin torch.
 
 ---
 

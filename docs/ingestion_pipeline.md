@@ -7,13 +7,29 @@
 3. The pipeline creates or resumes an `IngestionJob`, cleans derived artifacts, then moves through `parsing`, `chunking`, `embedding`, `vector_indexing`, and `graph_indexing`.
 4. Chunk IDs and Qdrant point IDs are deterministic, so retries rebuild instead of duplicating.
 5. Qdrant payloads include `user_id`, `document_id`, `text_hash`, `token_count`, `section_title`, `char_start`, `char_end`, `page_start`, `page_end`, `document_page_count`, and status metadata.
-6. Neo4j receives document, chunk, entity, and relation data after vector indexing succeeds.
+6. Sparse vectors are computed with a BM25-like algorithm over the document's own chunk corpus.
+7. Neo4j receives document, chunk, entity, and relation data after vector indexing succeeds:
+   - **Entities** are extracted from **every chunk** using the local **GLiNER** NER model.
+   - **Relations** are inferred by the LLM only for the first `MAX_RELATION_EXTRACTION_CHUNKS` chunks (default 48) to control API cost.
 
 ## Recovery Rules
 
 - `completed` documents are skipped unless explicitly reindexed.
 - Failed documents can be uploaded again or reindexed; retries clean Postgres chunks, Qdrant points, and Neo4j nodes for that document.
 - `IngestionJob` records keep phase, progress, retry count, error code, and timestamps for diagnostics.
+
+## Configuration
+
+Key environment variables for the graph extraction stage:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_GLINER` | `true` | Enable local GLiNER entity extraction |
+| `GLINER_MODEL` | `gliner-community/gliner_small-v2.5` | Hugging Face model used for NER |
+| `GLINER_LABELS` | `Persona,Organizzazione,...` | Comma-separated entity labels |
+| `GLINER_THRESHOLD` | `0.5` | Confidence threshold for accepted entities |
+| `MAX_RELATION_EXTRACTION_CHUNKS` | `48` | Max chunks sent to the LLM for relation extraction |
+| `MAX_GRAPH_EXTRACTION_CHUNKS` | `48` | Legacy fallback for relation chunk limit |
 
 ## Next Quality Gates
 

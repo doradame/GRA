@@ -1,7 +1,7 @@
 # Pipeline di Ingestion — Analisi dettagliata dal codice
 
 > Documento generato a partire dal codice sorgente di `graph-rag-assistant/backend/app/`.
-> File principali coinvolti: `routers/documents.py`, `tasks/ingestion.py`, `services/ingestion.py`, `services/parsing.py`, `services/chunking.py`, `services/embeddings.py`, `services/sparse_vectors.py`, `services/vector_store.py`, `services/graph_store.py`, `services/extraction.py`, `services/storage.py`, `models/models.py`, `core/config.py`, `core/celery_app.py`.
+> File principali coinvolti: `routers/documents.py`, `tasks/ingestion.py`, `tasks/entity_resolution.py`, `services/ingestion.py`, `services/parsing.py`, `services/chunking.py`, `services/embeddings.py`, `services/sparse_vectors.py`, `services/vector_store.py`, `services/graph_store.py`, `services/extraction.py`, `services/gliner_extraction.py`, `services/entity_resolution.py`, `services/storage.py`, `models/models.py`, `core/config.py`, `core/celery_app.py`.
 
 ---
 
@@ -13,6 +13,8 @@ L’ingestion è il processo che trasforma un file caricato dall’utente in una
 2. Il backend valida il file, lo salva su MinIO e crea un record nel database PostgreSQL.
 3. Se il documento è schedulabile, viene invocato il task Celery `ingest_document_task`.
 4. Il worker Celery esegue `process_document` in un nuovo event loop, passando attraverso le fasi di parsing, chunking, embedding, indicizzazione vettoriale (Qdrant) e costruzione del grafo (Neo4j).
+5. I vettori sparsi sono calcolati con un algoritmo **BM25-like** sul corpus dei chunk del documento.
+6. Le **entità** vengono estratte da **tutti i chunk** con il modello locale **GLiNER**; le **relazioni** vengono inferite dall’LLM solo per i primi `MAX_RELATION_EXTRACTION_CHUNKS` chunk.
 
 Le fasi sono tracciate nel campo `Document.status` e dettagliate nella tabella `IngestionJob`.
 
@@ -165,12 +167,13 @@ I vettori Qdrant sono costruiti con `vector_store.build_point_vector(embedding, 
 #### Fase 6: Indicizzazione grafo (`STATUS_GRAPH_INDEXING`, progresso 80)
 
 1. Crea il nodo `Document` in Neo4j con `graph_store.add_document(...)`.
-2. Per ogni chunk:
+2. Calcola il limite per l’estrazione relazioni: `max_relation_chunks = settings.max_relation_extraction_chunks` (con fallback su `max_graph_extraction_chunks`, default 48).
+3. Per ogni chunk:
    - crea il nodo `Chunk` e la relazione `BELONGS_TO` verso il documento (`graph_store.add_chunk`)
-   - se `idx < max_graph_extraction_chunks` (default 48), estrae entità e relazioni tramite `extract_entities_relations(chunk_text)`
+   - estrae le **entità** da **tutti i chunk** usando `gliner_extraction.extract_entities(chunk_text)` (modello GLiNER locale)
+   - estrae le **relazioni** solo per i primi `max_relation_chunks` chunk usando `extraction.extract_relations(chunk_text, entities)` (LLM)
    - le entità/relazioni estratte vengono aggiunte al grafo con `graph_store.add_entities_and_relations`
-   - se `idx >= max_graph_extraction_chunks`, l’estrazione viene saltata per i chunk successivi
-3. Il progresso della fase grafo viene aggiornato progressivamente con formula `80 + ((idx+1) / n_chunks) * 18`.
+4. Il progresso della fase grafo viene aggiornato progressivamente con formula `80 + ((idx+1) / n_chunks) * 18`.
 
 #### Fase 7: Completamento
 
@@ -272,16 +275,23 @@ Questa modalità permette di testare lo stack senza chiave OpenAI, ma le rispost
 
 I vettori sparsi sono opzionali e controllati da `settings.qdrant_enable_native_sparse` (default `False`).
 
-`build_sparse_vector`:
+`build_sparse_vector` implementa un algoritmo **BM25-like**:
 
-1. Tokenizza il testo con regex `r"[\wÀ-ÿ]{3,}"` in lowercase.
-2. Rimuove stopwords inglesi e italiane (elenco hardcoded di 21 termini).
-3. Per ogni token calcola un indice con `BLAKE2b` digest di 8 byte modulo 1.000.003 bucket.
-4. Somma i pesi `1 + log(count)` per token che collidono nello stesso bucket.
-5. Normalizza L2.
-6. Restituisce un `SparseVector` ordinato per indice.
+1. Tokenizza il testo con NLTK (`nltk.word_tokenize`) quando disponibile, con fallback su split per parole.
+2. Rimuove stopwords inglesi e italiane (da NLTK o fallback hardcoded).
+3. Filtra token corti (< 3 caratteri) e non alfabetici.
+4. Calcola i pesi BM25 per ogni termine rispetto al corpus dei chunk del documento (`corpus_tokens`):
+   - `tf` = frequenza del termine nel documento
+   - `idf` = `log((N - df + 0.5) / (df + 0.5) + 1.0)` se il corpus ha più di un documento, altrimenti `1.0`
+   - lunghezza del documento normalizzata rispetto alla lunghezza media del corpus
+5. Per ogni termine calcola un indice sparso con `BLAKE2b` digest di 8 byte modulo 1.000.003 bucket.
+6. Somma i pesi dei termini che collidono nello stesso bucket.
+7. Normalizza L2.
+8. Restituisce un `SparseVector` ordinato per indice.
 
-Questo fornisce una rappresentazione bag-of-words pesata per la ricerca ibrida su Qdrant.
+`tokenize_sparse` esporta la tokenizzazione per la costruzione del corpus all’interno di `process_document`.
+
+Questo fornisce una rappresentazione BM25 pesata per la ricerca ibrida su Qdrant, più robusta della precedente bag-of-words con 21 stopwords.
 
 ---
 
@@ -343,14 +353,53 @@ Relazioni:
 - `delete_document`: elimina il documento, i suoi chunk e le relazioni dei chunk; poi elimina le entità che non sono più menzionate da alcun chunk.
 - `reset`: `MATCH (n) DETACH DELETE n`.
 - `explore_entity` / `get_stats`: utility per esplorazione e metriche.
+- `_stringify_name`: normalizza la proprietà `name` di un nodo quando APOC `mergeNodes` la combina in array (prende il primo elemento).
+
+### 10.4 Entity Resolution
+
+Il modulo `services/entity_resolution.py` fornisce la deduplicazione fuzzy delle entità:
+
+- Carica tutte le entità da Neo4j raggruppate per tipo.
+- Calcola gli embedding dei nomi con `embed_texts`.
+- Trova coppie con similarità del coseno superiore a `0.93`.
+- Raggruppa le entità simili con Union-Find e le fonde tramite `apoc.refactor.mergeNodes` preservando relazioni e proprietà.
+- Il task Celery `resolve_entities_task` in `tasks/entity_resolution.py` permette di schedularlo (es. notturno).
 
 ---
 
-## 11. Estrazione entità e relazioni — `services/extraction.py`
+## 11. Estrazione entità e relazioni
 
-Per ogni chunk (fino al limite `max_graph_extraction_chunks`) viene chiamato un LLM OpenAI per estrarre entità e relazioni.
+La Fase 2 ha separato l’estrazione delle entità (NER locale con GLiNER) da quella delle relazioni (LLM).
 
-### 11.1 Schema JSON
+### 11.1 Estrazione entità — `services/gliner_extraction.py`
+
+`extract_entities(text, labels, threshold)`:
+
+- Usa il modello **GLiNER** locale (`gliner-community/gliner_small-v2.5` di default).
+- Le label sono configurabili via `GLINER_LABELS` (default: Persona, Organizzazione, Luogo, Prodotto, Concetto, Regola, Requisito, Rischio, Data, Numero, Sistema).
+- Soglia di confidenza configurabile via `GLINER_THRESHOLD` (default `0.5`).
+- Il modello viene caricato in modo lazy e cacheato nel processo worker (`_model`).
+- Ritorna entità nel formato `{"id": str, "name": str, "type": str}` con ID canonico stabile (`SHA256(tipo:nome)`).
+- Se `ENABLE_GLINER=false` o il testo è vuoto, ritorna lista vuota.
+
+### 11.2 Estrazione relazioni — `services/extraction.py`
+
+`extract_relations(chunk_text, entities)`:
+
+- Viene chiamata solo per i primi `MAX_RELATION_EXTRACTION_CHUNKS` chunk.
+- Riceve il testo del chunk e l’elenco delle entità già identificate da GLiNER.
+- Usa il prompt `RELATION_PROMPT` per chiedere all’LLM di mappare solo le relazioni logiche tra le entità fornite.
+- Se `OPENAI_API_KEY` è assente o `sk-test`, ritorna lista vuota.
+- Se le entità sono meno di 2, ritorna lista vuota.
+- Tronca il testo a 8000 caratteri.
+- Risposta in `json_object`; le relazioni vengono normalizzate e filtrate tramite `_normalize_relations`.
+- Traccia i token usati tramite `increment_extraction_calls`.
+
+### 11.3 Estrazione legacy — `extract_entities_relations`
+
+Mantenuta in `services/extraction.py` per retrocompatibilità. Esegue entità + relazioni in un’unica chiamata LLM con JSON schema o `json_object`.
+
+### 11.4 Schema JSON legacy
 
 ```json
 {
@@ -359,30 +408,18 @@ Per ogni chunk (fino al limite `max_graph_extraction_chunks`) viene chiamato un 
 }
 ```
 
-### 11.2 Prompt
+### 11.5 Normalizzazione
 
-Il prompt (in italiano) richiede di estrarre entità rilevanti (persone, organizzazioni, prodotti, concetti, regole, requisiti, rischi, date, numeri) e relazioni significative (richiede, esclude, include, si riferisce a, limita, dipende da, è parte di).
+`_normalize_extraction` (modalità legacy) e `_normalize_relations`:
 
-### 11.3 Modalità di chiamata
-
-- Se `OPENAI_API_KEY` è assente o `sk-test`, ritorna entità/relazioni vuote.
-- Il testo inviato al LLM è troncato a 8000 caratteri (`text[:8000]`).
-- Prima tenta `response_format={"type": "json_schema", ...}` (con `strict=True`).
-- Se il modello/API non supporta JSON schema (`BadRequestError`), passa a `response_format={"type": "json_object"}` con un system prompt che descrive la forma attesa.
-- Traccia i token usati tramite `increment_extraction_calls`.
-
-### 11.4 Normalizzazione
-
-`_normalize_extraction`:
-
-- converte eventuali dizionari di entità in liste
-- normalizza entità stringa in `{name, type: "Unknown"}`
-- calcola un `canonical_id` stabile come SHA256 di `"tipo:nome"` (lowercase, spazi normalizzati)
-- deduplica entità per `canonical_id`
-- mappa gli `id` temporanei del LLM ai `canonical_id`
-- filtra relazioni con `source_id` o `target_id` non validi o uguali
-- deduplica relazioni per `(source_id, target_id, type.lower())`
-- gestisce `properties` come dizionario opzionale
+- convertono eventuali dizionari di entità in liste
+- normalizzano entità stringa in `{name, type: "Unknown"}`
+- calcolano un `canonical_id` stabile come SHA256 di `"tipo:nome"` (lowercase, spazi normalizzati)
+- deduplicano entità per `canonical_id`
+- mappano gli `id` temporanei del LLM ai `canonical_id`
+- filtrano relazioni con `source_id` o `target_id` non validi o uguali
+- deduplicano relazioni per `(source_id, target_id, type.lower())`
+- gestiscono `properties` come dizionario opzionale
 
 ---
 
@@ -457,12 +494,17 @@ Parametri che influenzano direttamente l’ingestion:
 | `embedding_batch_size` | `96` | Batch per chiamate embedding |
 | `enable_ocr` | `False` | Abilita OCR fallback per PDF |
 | `min_text_chars_for_ocr` | `100` | Soglia testo minimo per scatenare OCR |
-| `max_graph_extraction_chunks` | `48` | Numero massimo di chunk da sottoporre a estrazione entità/relazioni |
+| `max_graph_extraction_chunks` | `48` | *Legacy*: fallback per il limite relazioni LLM |
+| `max_relation_extraction_chunks` | `None` | Se `None`, fallback su `max_graph_extraction_chunks`; limita i chunk inviati all’LLM per le relazioni |
+| `enable_gliner` | `True` | Abilita estrazione entità con GLiNER |
+| `gliner_model` | `gliner-community/gliner_small-v2.5` | Modello GLiNER da caricare |
+| `gliner_labels` | `Persona,Organizzazione,...` | Label NER riconosciute da GLiNER |
+| `gliner_threshold` | `0.5` | Soglia confidenza entità GLiNER |
 | `qdrant_collection` | `insurance_chunks` | Nome collezione Qdrant |
 | `qdrant_enable_native_sparse` | `False` | Abilita vettori sparsi nativi |
 | `qdrant_upsert_batch_size` | `500` | Batch upsert Qdrant |
 | `openai_api_key` | `""` | Chiave API; `sk-test` attiva modalità demo |
-| `openai_model` | `gpt-4o-mini` | Modello per estrazione entità/relazioni |
+| `openai_model` | `gpt-4o-mini` | Modello per estrazione relazioni |
 
 ---
 
@@ -503,12 +545,13 @@ routers/documents.py
               │   └── upsert in Qdrant
               ├── STATUS_GRAPH_INDEXING
               │   ├── add_document in Neo4j
+              │   ├── calcola max_relation_chunks
               │   ├── per ogni chunk:
               │   │   ├── add_chunk
-              │   │   └── se idx < max_graph_extraction_chunks:
-              │   │       ├── extract_entities_relations()
-              │   │       └── add_entities_and_relations()
-              │   └── aggiornamento progresso
+              │   │   ├── extract_entities()  [GLiNER, tutti i chunk]
+              │   │   └── se idx < max_relation_chunks:
+              │   │       └── extract_relations()  [LLM]
+              │   └── add_entities_and_relations() per ogni chunk
               └── STATUS_COMPLETED
 ```
 
@@ -516,7 +559,7 @@ routers/documents.py
 
 ## 16. Osservazioni e possibili miglioramenti
 
-1. **Estrazione grafo limitata ai primi 48 chunk**: documenti lunghi perdono le entità/relazioni dei chunk successivi. Si potrebbe rendere configurabile o campionare chunk rappresentativi.
+1. **Estrazione relazioni limitata ai primi 48 chunk**: le entità vengono estratte da tutti i chunk con GLiNER, ma le relazioni LLM sono limitate ai primi `MAX_RELATION_EXTRACTION_CHUNKS` chunk per contenere i costi. Documenti lunghi potrebbero perdere relazioni sui chunk successivi; si potrebbe campionare chunk rappresentativi o usare un modello locale anche per le relazioni.
 
 2. **OCR disabilitato di default**: i PDF scannerizzati non vengono processati se non si imposta `ENABLE_OCR=true`. Inoltre l’OCR perde le informazioni di pagina (`pages`) perché `_extract_pdf_ocr` non restituisce `PageText`.
 
@@ -536,6 +579,10 @@ routers/documents.py
 
 10. **Filename**: viene sanitizzato (`_safe_filename`) sostituendo caratteri non alfanumerici con `_` e troncato a 180 caratteri.
 
+11. **Entity resolution**: il task `resolve_entities_task` non è schedulato automaticamente; va invocato manualmente o configurato in Celery beat per eseguirlo periodicamente (es. notturno).
+
+12. **GLiNER primo caricamento**: il primo caricamento del modello GLiNER nel worker può richiedere tempo e memoria; il modello viene cacheato per tutta la vita del processo worker.
+
 ---
 
 ## 17. File e funzioni di riferimento
@@ -551,7 +598,10 @@ routers/documents.py
 | `services/sparse_vectors.py` | `build_sparse_vector` | Embedding sparso |
 | `services/vector_store.py` | `VectorStore.upsert`, `search_hybrid` | Qdrant |
 | `services/graph_store.py` | `GraphStore.add_*`, `delete_document` | Neo4j |
-| `services/extraction.py` | `extract_entities_relations` | LLM entity/relation extraction |
+| `services/extraction.py` | `extract_relations`, `extract_entities_relations` | LLM relation extraction (legacy) |
+| `services/gliner_extraction.py` | `extract_entities` | GLiNER NER locale |
+| `services/entity_resolution.py` | `resolve_entities` | Fuzzy merging entità |
+| `tasks/entity_resolution.py` | `resolve_entities_task` | Celery task entity resolution |
 | `services/storage.py` | `DocumentStorage.upload/download/delete` | MinIO |
 | `models/models.py` | `Document`, `Chunk`, `IngestionJob` | Schema DB |
 | `core/config.py` | `Settings` | Configurazione |
