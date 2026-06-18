@@ -48,6 +48,7 @@ services:
       - MAX_RELATION_EXTRACTION_CHUNKS=${MAX_RELATION_EXTRACTION_CHUNKS:-48}
     volumes:
       - ./backend/app:/app/app
+      - ./backend/tests:/app/tests
       - ./data/documents:/app/documents
       - ./data/huggingface:/root/.cache/huggingface
     depends_on:
