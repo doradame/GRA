@@ -303,6 +303,19 @@ services:
     networks:
       - igr-network
 
+  librechat-admin:
+    image: ghcr.io/clickhouse/librechat-admin-panel:latest
+    container_name: igr-librechat-admin
+    restart: unless-stopped
+    expose:
+      - "3000"
+    env_file:
+      - ./librechat/admin.env
+    depends_on:
+      - librechat
+    networks:
+      - igr-network
+
   mongo:
     image: mongo:7
     container_name: igr-mongo

@@ -10,6 +10,10 @@ chat.matamune.4nk.eu {
     reverse_proxy librechat:3080
 }
 
+chat-admin.matamune.4nk.eu {
+    reverse_proxy librechat-admin:3000
+}
+
 mcp.matamune.4nk.eu {
     @authorized header X-MCP-API-Key {$MCP_API_KEY}
     handle @authorized {
