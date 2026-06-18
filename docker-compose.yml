@@ -41,9 +41,15 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - LIBRECHAT_API_KEY=${LIBRECHAT_BACKEND_API_KEY:-f13d1fed3154ef1206a9278a22574db620d72efaeea07fedb4a1266247b69f96}
+      - ENABLE_GLINER=${ENABLE_GLINER:-true}
+      - GLINER_MODEL=${GLINER_MODEL:-gliner-community/gliner_small-v2.5}
+      - GLINER_LABELS=${GLINER_LABELS:-Persona,Organizzazione,Luogo,Prodotto,Concetto,Regola,Requisito,Rischio,Data,Numero,Sistema}
+      - GLINER_THRESHOLD=${GLINER_THRESHOLD:-0.5}
+      - MAX_RELATION_EXTRACTION_CHUNKS=${MAX_RELATION_EXTRACTION_CHUNKS:-48}
     volumes:
       - ./backend/app:/app/app
       - ./data/documents:/app/documents
+      - ./data/huggingface:/root/.cache/huggingface
     depends_on:
       - db
       - neo4j
@@ -90,9 +96,15 @@ services:
       - AUTO_CREATE_TABLES=${AUTO_CREATE_TABLES:-true}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - ENABLE_GLINER=${ENABLE_GLINER:-true}
+      - GLINER_MODEL=${GLINER_MODEL:-gliner-community/gliner_small-v2.5}
+      - GLINER_LABELS=${GLINER_LABELS:-Persona,Organizzazione,Luogo,Prodotto,Concetto,Regola,Requisito,Rischio,Data,Numero,Sistema}
+      - GLINER_THRESHOLD=${GLINER_THRESHOLD:-0.5}
+      - MAX_RELATION_EXTRACTION_CHUNKS=${MAX_RELATION_EXTRACTION_CHUNKS:-48}
     volumes:
       - ./backend/app:/app/app
       - ./data/documents:/app/documents
+      - ./data/huggingface:/root/.cache/huggingface
     depends_on:
       - db
       - neo4j

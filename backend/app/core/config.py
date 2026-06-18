@@ -24,7 +24,12 @@ class Settings(BaseSettings):
     embedding_batch_size: int = 96
     enable_ocr: bool = False
     min_text_chars_for_ocr: int = 100
-    max_graph_extraction_chunks: int = 48
+    max_graph_extraction_chunks: int = 48  # deprecated, kept for backward compatibility
+    max_relation_extraction_chunks: int | None = None  # if None, falls back to max_graph_extraction_chunks
+    enable_gliner: bool = True
+    gliner_model: str = "gliner-community/gliner_small-v2.5"
+    gliner_labels: str = "Persona,Organizzazione,Luogo,Prodotto,Concetto,Regola,Requisito,Rischio,Data,Numero,Sistema"
+    gliner_threshold: float = 0.5
     retrieval_oversampling_factor: int = 3
     retrieval_lexical_weight: float = 0.15
     retrieval_score_threshold: float = 0.25

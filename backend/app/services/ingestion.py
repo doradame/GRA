@@ -16,7 +16,8 @@ from app.services.chunking import chunk_text
 from app.services.embeddings import embed_texts
 from app.services.vector_store import vector_store
 from app.services.graph_store import graph_store
-from app.services.extraction import extract_entities_relations
+from app.services.extraction import extract_relations
+from app.services.gliner_extraction import extract_entities as gliner_extract_entities
 from app.services.sparse_vectors import build_sparse_vector, tokenize_sparse
 
 logger = logging.getLogger(__name__)
@@ -404,7 +405,12 @@ async def process_document(
                 logger.info("[ingestion] Document node added to graph: document_id=%s", document_id)
 
                 progress_step = max(1, len(chunks) // 20)
-                max_graph_extraction_chunks = max(0, settings.max_graph_extraction_chunks)
+                # GLiNER estrae entità da tutti i chunk; il limite si applica solo alle relazioni LLM.
+                max_relation_chunks_setting = settings.max_relation_extraction_chunks
+                if max_relation_chunks_setting is None:
+                    max_relation_chunks_setting = settings.max_graph_extraction_chunks
+                max_relation_chunks = max(0, max_relation_chunks_setting)
+
                 for idx, chunk_text_content in enumerate(chunks):
                     text_hash = _hash_text(chunk_text_content)
                     chunk_id = _stable_uuid("chunk", document_id, idx, text_hash)
@@ -412,32 +418,42 @@ async def process_document(
                     logger.debug("[ingestion] Adding chunk %s/%s to graph for document_id=%s", idx + 1, len(chunks), document_id)
                     graph_store.add_chunk(chunk_id, document_id, chunk_text_content, idx, user_id=user_id)
 
-                    if idx >= max_graph_extraction_chunks:
-                        if idx == max_graph_extraction_chunks:
-                            logger.info(
-                                "[ingestion] Skipping entity extraction after %s chunks for document_id=%s",
-                                max_graph_extraction_chunks,
-                                document_id,
-                            )
-                        if (idx + 1) % progress_step == 0 or idx + 1 == len(chunks):
-                            graph_progress = 80 + int(((idx + 1) / len(chunks)) * 18)
-                            await _set_document_status(db, doc, STATUS_GRAPH_INDEXING, job=job, progress=graph_progress)
-                        continue
-
-                    logger.debug("[ingestion] Extracting entities/relations for chunk %s/%s of document_id=%s", idx + 1, len(chunks), document_id)
+                    # 1. Estrazione entità con GLiNER su TUTTI i chunk.
+                    logger.debug("[ingestion] Extracting entities with GLiNER for chunk %s/%s of document_id=%s", idx + 1, len(chunks), document_id)
                     try:
-                        extracted = await extract_entities_relations(chunk_text_content)
+                        entities = gliner_extract_entities(chunk_text_content)
                     except Exception as extraction_error:
                         logger.warning(
-                            "[ingestion] Entity extraction failed for chunk %s/%s of document_id=%s: %s",
+                            "[ingestion] GLiNER entity extraction failed for chunk %s/%s of document_id=%s: %s",
                             idx + 1,
                             len(chunks),
                             document_id,
                             extraction_error,
                         )
-                        extracted = {"entities": [], "relations": []}
-                    entities = extracted.get("entities", [])
-                    relations = extracted.get("relations", [])
+                        entities = []
+
+                    # 2. Estrazione relazioni con LLM solo per i primi chunk (controllo costi).
+                    relations: list[dict] = []
+                    if idx < max_relation_chunks:
+                        logger.debug("[ingestion] Extracting relations with LLM for chunk %s/%s of document_id=%s", idx + 1, len(chunks), document_id)
+                        try:
+                            relations = await extract_relations(chunk_text_content, entities)
+                        except Exception as extraction_error:
+                            logger.warning(
+                                "[ingestion] Relation extraction failed for chunk %s/%s of document_id=%s: %s",
+                                idx + 1,
+                                len(chunks),
+                                document_id,
+                                extraction_error,
+                            )
+                            relations = []
+                    elif idx == max_relation_chunks:
+                        logger.info(
+                            "[ingestion] Skipping LLM relation extraction after %s chunks for document_id=%s",
+                            max_relation_chunks,
+                            document_id,
+                        )
+
                     logger.debug(
                         "[ingestion] Chunk %s/%s extracted %s entities and %s relations for document_id=%s",
                         idx + 1,
