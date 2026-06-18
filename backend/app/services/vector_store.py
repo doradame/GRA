@@ -79,9 +79,25 @@ class VectorStore:
                 settings.qdrant_sparse_vector_name,
             )
 
-    def upsert(self, points: List[PointStruct]):
+    def upsert(self, points: List[PointStruct], batch_size: Optional[int] = None):
+        if batch_size is None:
+            batch_size = settings.qdrant_upsert_batch_size
+
         logger.info("[vector] Upserting %s points to collection %s", len(points), self.collection)
-        self.client.upsert(collection_name=self.collection, points=points)
+
+        if batch_size <= 0:
+            self.client.upsert(collection_name=self.collection, points=points)
+        else:
+            for i in range(0, len(points), batch_size):
+                batch = points[i : i + batch_size]
+                logger.info(
+                    "[vector] Upserting batch %s-%s of %s points",
+                    i + 1,
+                    i + len(batch),
+                    len(points),
+                )
+                self.client.upsert(collection_name=self.collection, points=batch)
+
         logger.info("[vector] Upsert complete")
 
     def search(self, vector: List[float], top_k: int = 10, filter=None) -> List[dict]:

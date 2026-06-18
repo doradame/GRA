@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     qdrant_enable_native_sparse: bool = False
     qdrant_dense_vector_name: str = "dense"
     qdrant_sparse_vector_name: str = "text_sparse"
+    qdrant_upsert_batch_size: int = 500
     minio_endpoint: str = "minio:9000"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
