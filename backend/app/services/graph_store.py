@@ -146,11 +146,22 @@ class GraphStore:
                     props=rel.get("properties", {}),
                 )
 
+    @staticmethod
+    def _stringify_name(value: Any) -> str:
+        """Normalizza il nome di un nodo in stringa singola.
+
+        APOC mergeNodes può combinare proprietà `name` in array; in tal caso
+        prendiamo il primo elemento e ignoriamo i duplicati successivi.
+        """
+        if isinstance(value, list):
+            value = value[0] if value else ""
+        return str(value) if value is not None else ""
+
     def explore_entity(self, entity_name: str, depth: int = 1) -> Dict[str, Any]:
         logger.debug("[graph] Exploring entity: %s (depth=%s)", entity_name, depth)
         query = f"""
         MATCH path = (e:Entity)-[*1..{depth}]-(connected)
-        WHERE toLower(e.name) CONTAINS toLower($entity_name)
+        WHERE toLower(CASE WHEN apoc.meta.cypher.type(e.name) STARTS WITH 'LIST' THEN e.name[0] ELSE e.name END) CONTAINS toLower($entity_name)
         RETURN e, connected, relationships(path) AS rels
         LIMIT 50
         """
@@ -161,12 +172,16 @@ class GraphStore:
             for record in result:
                 e = record["e"]
                 conn = record["connected"]
-                entities[e.element_id] = {"id": e["id"], "name": e["name"], "type": e["type"]}
-                entities[conn.element_id] = {"id": conn.get("id"), "name": conn.get("name", conn.get("filename", "")), "type": next(iter(conn.labels), "Unknown")}
+                entities[e.element_id] = {"id": e["id"], "name": self._stringify_name(e["name"]), "type": e["type"]}
+                entities[conn.element_id] = {
+                    "id": conn.get("id"),
+                    "name": self._stringify_name(conn.get("name", conn.get("filename", ""))),
+                    "type": next(iter(conn.labels), "Unknown"),
+                }
                 for rel in record["rels"]:
                     relations.append({
-                        "source": rel.start_node["name"] if "name" in rel.start_node else rel.start_node.get("filename", ""),
-                        "target": rel.end_node["name"] if "name" in rel.end_node else rel.end_node.get("filename", ""),
+                        "source": self._stringify_name(rel.start_node.get("name", rel.start_node.get("filename", ""))),
+                        "target": self._stringify_name(rel.end_node.get("name", rel.end_node.get("filename", ""))),
                         "type": rel.type,
                     })
             logger.debug("[graph] Explore returned %s entities and %s relations", len(entities), len(relations))
