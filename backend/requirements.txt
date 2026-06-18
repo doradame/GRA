@@ -30,3 +30,6 @@ nltk>=3.9
 numpy>=1.26
 gliner>=0.2.27,<0.3.0
 torch>=2.0,<3.0
+langgraph>=0.2.0
+networkx>=3.0
+python-louvain>=0.16

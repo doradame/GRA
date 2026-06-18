@@ -1,4 +1,9 @@
-from app.services.rag_engine import _diversify_results, _extract_quote, _format_reference, _rerank_hybrid
+from app.services.retrieval_utils import (
+    diversify_results,
+    extract_quote,
+    format_reference,
+    rerank_hybrid,
+)
 
 
 def test_diversify_results_drops_near_duplicate_chunks():
@@ -8,7 +13,7 @@ def test_diversify_results_drops_near_duplicate_chunks():
         {"score": 0.88, "payload": {"text": "Policy Y excludes expired contracts"}},
     ]
 
-    diversified = _diversify_results(results)
+    diversified = diversify_results(results)
 
     assert diversified == [results[0], results[2]]
 
@@ -19,7 +24,7 @@ def test_rerank_hybrid_adds_lexical_signal():
         {"score": 0.79, "payload": {"text": "risk approval required for policy x"}},
     ]
 
-    reranked = _rerank_hybrid("risk approval", results)
+    reranked = rerank_hybrid("risk approval", results)
 
     assert reranked[0]["payload"]["text"] == "risk approval required for policy x"
     assert reranked[0]["lexical_score"] > reranked[1]["lexical_score"]
@@ -37,5 +42,5 @@ def test_reference_and_quote_helpers_prefer_human_readable_metadata():
         "index": 2,
     }
 
-    assert _format_reference(payload) == "manuale.pdf, pagine 4-5"
-    assert _extract_quote("  Una frase   con spazi\nmultipli.  ") == "Una frase con spazi multipli."
+    assert format_reference(payload) == "manuale.pdf, pagine 4-5"
+    assert extract_quote("  Una frase   con spazi\nmultipli.  ") == "Una frase con spazi multipli."

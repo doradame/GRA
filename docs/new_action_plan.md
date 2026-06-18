@@ -5,7 +5,7 @@
 **Stato attuale (aggiornato al 18/06/2026):**
 * ✅ Fase 1 completata — vettori sparsi BM25 + entity resolution fuzzy con APOC.
 * ✅ Fase 2 completata — estrazione entità con GLiNER su tutti i chunk, relazioni solo via LLM.
-* 🔄 Fase 3 in corso / da pianificare — orchestrazione agentica con LangGraph, Local/Global Graph Search.
+* ✅ Fase 3 completata — orchestrazione agentica con LangGraph, Local/Global Graph Search.
 
 ---
 
@@ -67,31 +67,60 @@ Separata l'estrazione delle entità (NER) da quella delle relazioni per ottimizz
 
 ---
 
-## Fase 3: Orchestrazione Agentica e Retrieval Avanzato
+## Fase 3: Orchestrazione Agentica e Retrieval Avanzato ✅ COMPLETATA
 
-Sostituire la singola catena di query statica con un workflow decisionale in grado di instradare la domanda verso lo strumento più adatto.
+Sostituita la singola catena di query statica con un workflow decisionale in grado di instradare la domanda verso lo strumento più adatto.
 
 ### 3.1. Integrazione Framework Agentico (LangGraph)
-* **Azione:** Riscrivere il modulo di query/retrieval utilizzando **LangGraph** (o equivalente state-machine framework).
+* **Stato:** Completato in `services/agent/`.
+* **Approccio:** LangGraph-light: `langgraph` gestisce stato e transizioni, i tool sono funzioni async native del progetto.
 * **Componenti:**
-    * **Semantic Router (Nodo di Inizio):** Analizza l'intento della query.
-    * **Vector Tool:** Instradamento per recupero fattuale classico via Qdrant.
-    * **Text2Cypher Tool:** Instradamento per domande relazionali complesse (es. "Quali sistemi sono bloccati dal firewall X?"). L'agente genera Cypher e lo esegue direttamente su Neo4j.
+    * **Semantic Router (`services/agent/router.py`):** Classifica l'intento in `factual`, `relational`, `summary`, `direct` via LLM con fallback euristico.
+    * **Vector Tool (`services/agent/tools/vector_tool.py`):** Recupero fattuale classico via Qdrant + espansione con sottografo locale Neo4j.
+    * **Text2Cypher Tool (`services/agent/tools/cypher_tool.py`):** Generazione ed esecuzione read-only di query Cypher per domande relazionali, con validazione statica e retry.
+    * **Community Tool (`services/agent/tools/community_tool.py`):** Recupero riassunti `:CommunitySummary` correlati alle entità della query.
+    * **Synthesizer (`services/agent/nodes.py`):** Unifica i risultati degli strumenti e genera la risposta finale con citazioni.
+    * **Grafo (`services/agent/graph.py`):** Assemblaggio del grafo LangGraph con routing condizionale.
+* **Integrazione:** `services/rag_engine.py::chat_completion` ora invoca `agent_graph.ainvoke` mantenendo la stessa firma e retrocompatibilità dell'endpoint `/api/v1/chat/completions`.
 
 ### 3.2. Local Graph Search (Iniezione di Contesto Topologico)
-* **Azione:** Arricchire il Vector Tool standard.
-* **Implementazione:** Quando Qdrant restituisce i top-K chunk, intercettare i `chunk_ids`. Eseguire una query rapida su Neo4j per estrarre il sottografo locale:
+* **Stato:** Completato in `services/agent/tools/vector_tool.py` e `services/graph_store.py`.
+* **Implementazione:** Dopo il recupero ibrido dai chunk, i `chunk_id` vengono usati per estrarre il sottografo locale:
     ```cypher
-    MATCH (c:Chunk)-[:MENTIONS]->(e:Entity)-[r]-(e2:Entity) 
-    WHERE c.id IN $chunk_ids 
-    RETURN e, r, e2
+    MATCH (c:Chunk)-[:MENTIONS]->(e:Entity)-[r]-(e2:Entity)
+    WHERE c.id IN $chunk_ids
+    RETURN e.name AS source, type(r) AS rel_type, e2.name AS target
+    LIMIT 200
     ```
-* **Iniezione:** Serializzare queste relazioni in testo (es. *"L'entità X ha una relazione Y con Z"*) e iniettarle nel prompt del LLM assieme ai chunk grezzi.
+* **Iniezione:** I fatti vengono deduplicati, limitati a `AGENT_MAX_GRAPH_FACTS` e serializzati come `"X --[rel]--> Y"` nel contesto del prompt.
 
 ### 3.3. Global Graph Summarization (Community Detection)
-* **Azione:** Gestire le query di sintesi ad alto livello (es. "Quali sono le tematiche principali del documento?").
-* **Implementazione:** Configurare un job Celery settimanale o giornaliero che utilizza la libreria *Graph Data Science (GDS)* di Neo4j.
-    * Eseguire l'algoritmo di **Leiden** o **Louvain** per identificare cluster di entità.
-    * Generare via LLM un riassunto per ogni cluster e salvarlo come nodo `:CommunitySummary`. L'agente interrogherà questi riassunti invece di eseguire letture massive o incappare in limiti di contesto.
+* **Stato:** Completato in `services/community_detection.py` e `tasks/community_detection.py`.
+* **Implementazione:**
+    * Algoritmo **Louvain** via libreria Python `python-louvain` (GDS non disponibile in Neo4j Community Edition).
+    * Task Celery `community_detection_task` eseguibile on-demand dall'endpoint admin.
+    * Per ogni community vengono estratte entità e relazioni interne, generato un riassunto con LLM e salvato come nodo `:CommunitySummary` con relazioni `BELONGS_TO_COMMUNITY`.
+    * Endpoint admin: `POST /api/v1/graph/community-detection` e `GET /api/v1/graph/community-summaries`.
+
+### File coinvolti Fase 3
+* `backend/app/services/agent/state.py` — modelli e `AgentState`.
+* `backend/app/services/agent/router.py` — semantic router.
+* `backend/app/services/agent/nodes.py` — `direct_answer` e `synthesizer`.
+* `backend/app/services/agent/tools/vector_tool.py` — Vector Tool + local graph expansion.
+* `backend/app/services/agent/tools/cypher_tool.py` — Text2Cypher Tool.
+* `backend/app/services/agent/tools/community_tool.py` — Community Tool.
+* `backend/app/services/agent/graph.py` — grafo LangGraph.
+* `backend/app/services/community_detection.py` — logica community detection.
+* `backend/app/services/retrieval_utils.py` — utility di retrieval condivise.
+* `backend/app/services/rag_engine.py` — integrazione agente.
+* `backend/app/services/graph_store.py` — vincolo `CommunitySummary` e metodi di supporto.
+* `backend/app/tasks/community_detection.py` — task Celery.
+* `backend/app/core/config.py` — configurazioni agente e community detection.
+* `backend/app/core/celery_app.py` — include il nuovo task.
+* `backend/app/routers/graph.py` — endpoint admin.
+* `backend/app/models/schemas.py` — schemi response community.
+* `backend/requirements.txt` — `langgraph`, `networkx`, `python-louvain`.
+* `backend/docker-compose.yml` — variabili d'ambiente agente/community.
+* `backend/tests/test_agent_router.py`, `test_cypher_tool.py`, `test_vector_tool.py`, `test_community_detection.py`.
 
 ---

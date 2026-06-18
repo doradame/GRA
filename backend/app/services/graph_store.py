@@ -66,6 +66,7 @@ class GraphStore:
             session.run("CREATE CONSTRAINT entity_id IF NOT EXISTS FOR (e:Entity) REQUIRE e.id IS UNIQUE")
             session.run("CREATE CONSTRAINT chunk_id IF NOT EXISTS FOR (c:Chunk) REQUIRE c.id IS UNIQUE")
             session.run("CREATE CONSTRAINT document_id IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE")
+            session.run("CREATE CONSTRAINT community_summary_id IF NOT EXISTS FOR (cs:CommunitySummary) REQUIRE cs.id IS UNIQUE")
         logger.info("[graph] Neo4j constraints initialized")
 
     def close(self):
@@ -268,6 +269,86 @@ class GraphStore:
                 "entities": entity_count,
                 "relations": rel_count,
             }
+
+    def explore_local_subgraph(self, chunk_ids: List[str], limit: int = 200) -> List[Dict[str, str]]:
+        logger.debug("[graph] Exploring local subgraph for %s chunks", len(chunk_ids))
+        if not chunk_ids:
+            return []
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (c:Chunk)-[:MENTIONS]->(e:Entity)-[r]-(e2:Entity)
+                WHERE c.id IN $chunk_ids
+                RETURN e.name AS source, type(r) AS rel_type, e2.name AS target
+                LIMIT $limit
+                """,
+                chunk_ids=chunk_ids,
+                limit=limit,
+            )
+            return [
+                {
+                    "source": self._stringify_name(record.get("source")),
+                    "target": self._stringify_name(record.get("target")),
+                    "type": record.get("rel_type", "RELATED_TO"),
+                }
+                for record in result
+            ]
+
+    def get_community_summaries(self, entity_ids: List[str], limit: int = 20) -> List[Dict[str, Any]]:
+        if not entity_ids:
+            return []
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (e:Entity)-[:BELONGS_TO_COMMUNITY]->(cs:CommunitySummary)
+                WHERE e.id IN $entity_ids
+                RETURN cs.id AS community_id,
+                       cs.summary AS summary,
+                       cs.entity_count AS entity_count,
+                       cs.relation_count AS relation_count,
+                       cs.updated_at AS updated_at
+                ORDER BY cs.entity_count DESC
+                LIMIT $limit
+                """,
+                entity_ids=entity_ids,
+                limit=limit,
+            )
+            summaries = []
+            seen = set()
+            for record in result:
+                cid = record["community_id"]
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                summaries.append(record.data())
+            return summaries
+
+    def add_community_summary(
+        self,
+        community_id: str,
+        summary: str,
+        entity_ids: List[str],
+        relation_count: int,
+    ):
+        with self.driver.session() as session:
+            session.run(
+                """
+                MERGE (cs:CommunitySummary {id: $community_id})
+                SET cs.summary = $summary,
+                    cs.entity_count = $entity_count,
+                    cs.relation_count = $relation_count,
+                    cs.updated_at = datetime()
+                WITH cs
+                UNWIND $entity_ids AS entity_id
+                MATCH (e:Entity {id: entity_id})
+                MERGE (e)-[:BELONGS_TO_COMMUNITY]->(cs)
+                """,
+                community_id=community_id,
+                summary=summary,
+                entity_count=len(entity_ids),
+                relation_count=relation_count,
+                entity_ids=entity_ids,
+            )
 
 
 graph_store = GraphStore()

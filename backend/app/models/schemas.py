@@ -144,3 +144,16 @@ class GraphRelation(BaseModel):
 class GraphExploreResponse(BaseModel):
     entities: List[GraphEntity]
     relations: List[GraphRelation]
+
+
+class CommunitySummaryOut(BaseModel):
+    community_id: str
+    summary: str
+    entity_count: int
+    relation_count: int
+    updated_at: Optional[datetime] = None
+
+
+class CommunitySummaryList(BaseModel):
+    items: List[CommunitySummaryOut]
+    total: int

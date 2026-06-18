@@ -43,6 +43,18 @@ class Settings(BaseSettings):
     librechat_api_key: str = "changeme"
     auto_create_tables: bool = True
 
+    # Agentic retrieval
+    agent_max_iterations: int = 3
+    agent_cypher_max_retries: int = 1
+    agent_max_graph_facts: int = 20
+    agent_max_community_summaries: int = 5
+
+    # Community detection
+    community_detection_algorithm: str = "louvain"
+    community_detection_resolution: float = 1.0
+    community_summary_model: str = "gpt-4o-mini"
+    community_summary_max_entities: int = 50
+
     class Config:
         env_file = ".env"
         extra = "ignore"
