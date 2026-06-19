@@ -220,3 +220,54 @@ async def recompute_global_stats_from_postgres(db: AsyncSession) -> None:
         )
     except Exception as exc:
         logger.warning("[sparse_corpus_stats] Ricostruzione statistiche globali fallita: %s", exc)
+
+
+async def reconcile_bm25_cache_if_needed(db: AsyncSession, tolerance: int = 5) -> bool:
+    """Riconcilia la cache BM25 Redis con Postgres se mancante o fuori sync.
+
+    Chiamata allo startup del backend (main.py) per auto-riparare la cache in caso di
+    flush/perdita Redis: altrimenti le query leggeranno vettori sparsi vuoti e il BM25
+    smetterebbe silenziosamente di matchare. Source of truth = Postgres.
+
+    - Chiave `bm25:total_chunks` mancante -> recompute sempre (evento critico: cache persa).
+    - Chiave presente ma |redis - count(Chunk)| > tolerance -> recompute. La tolleranza
+      copre la finestra transitoria ingestion `db.commit()` -> `apply_document_delta()`
+      dove count(Chunk) e la cache divergono per qualche secondo (evita reconcile spurio
+      a ogni restart).
+    - Altrimenti skip (cache in sync).
+
+    Best-effort: una race con un'ingestion in corso al momento del reconcile è accettata
+    (l'invariant total_chunks == count(Chunk) si ristabilisce al prossimo ingest/reconcile).
+
+    Ritorna True se ha ricalcolato, False se la cache era già in sync.
+    """
+    try:
+        r = _get_redis()
+        cache_exists = bool(r.exists(REDIS_TOTAL_CHUNKS_KEY))
+    except Exception as exc:
+        logger.warning("[sparse_corpus_stats] Controllo cache BM25 fallito, skip reconcile: %s", exc)
+        return False
+
+    need_recompute = False
+    reason = ""
+    if not cache_exists:
+        need_recompute = True
+        reason = "cache Redis mancante (bm25:total_chunks assente)"
+    else:
+        cached_total = _get_int(REDIS_TOTAL_CHUNKS_KEY)
+        pg_result = await db.execute(select(func.count(Chunk.id)))
+        pg_total = pg_result.scalar() or 0
+        if abs(cached_total - pg_total) > tolerance:
+            need_recompute = True
+            reason = (
+                f"deriva chunk count: cache={cached_total} postgres={pg_total} "
+                f"(tolerance={tolerance})"
+            )
+
+    if not need_recompute:
+        logger.info("[sparse_corpus_stats] Cache BM25 in sync, nessun reconcile necessario")
+        return False
+
+    logger.info("[sparse_corpus_stats] Reconcile cache BM25: %s", reason)
+    await recompute_global_stats_from_postgres(db)
+    return True

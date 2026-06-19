@@ -1,8 +1,11 @@
+import asyncio
+
 import app.services.sparse_corpus_stats as stats_module
 from app.services.sparse_corpus_stats import (
     apply_document_delta,
     get_global_stats_snapshot,
     get_term_ids_cached,
+    reconcile_bm25_cache_if_needed,
     reset_global_stats,
 )
 
@@ -42,6 +45,9 @@ class FakeRedis:
         for key in keys:
             self.hashes.pop(key, None)
             self.strings.pop(key, None)
+
+    def exists(self, key):
+        return 1 if (key in self.hashes or key in self.strings) else 0
 
     def pipeline(self):
         return FakePipeline(self)
@@ -139,3 +145,63 @@ def test_reset_global_stats_clears_all_keys(monkeypatch):
     assert stats_module.REDIS_VOCAB_KEY not in fake.hashes
     assert stats_module.REDIS_TOTAL_CHUNKS_KEY not in fake.strings
     assert stats_module.REDIS_TOTAL_TOKENS_KEY not in fake.strings
+
+
+class _FakeScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar(self):
+        return self._value
+
+
+class _FakeDb:
+    """AsyncSession minimale: serve solo a reconcile_bm25_cache_if_needed (count chunk)."""
+
+    def __init__(self, chunk_count: int):
+        self._chunk_count = chunk_count
+
+    async def execute(self, stmt):
+        return _FakeScalarResult(self._chunk_count)
+
+
+def _patch_recompute(monkeypatch):
+    calls = {"count": 0}
+
+    async def fake_recompute(db):
+        calls["count"] += 1
+
+    monkeypatch.setattr(stats_module, "recompute_global_stats_from_postgres", fake_recompute)
+    return calls
+
+
+def test_reconcile_recomputes_when_cache_missing(monkeypatch):
+    _patch_redis(monkeypatch)  # cache vuota -> exists ritorna 0
+    calls = _patch_recompute(monkeypatch)
+
+    result = asyncio.run(reconcile_bm25_cache_if_needed(_FakeDb(100), tolerance=5))
+
+    assert result is True
+    assert calls["count"] == 1
+
+
+def test_reconcile_recomputes_when_drift_exceeds_tolerance(monkeypatch):
+    fake = _patch_redis(monkeypatch)
+    fake.strings[stats_module.REDIS_TOTAL_CHUNKS_KEY] = "90"  # cache: 90, postgres: 100
+    calls = _patch_recompute(monkeypatch)
+
+    result = asyncio.run(reconcile_bm25_cache_if_needed(_FakeDb(100), tolerance=5))
+
+    assert result is True
+    assert calls["count"] == 1
+
+
+def test_reconcile_skips_when_within_tolerance(monkeypatch):
+    fake = _patch_redis(monkeypatch)
+    fake.strings[stats_module.REDIS_TOTAL_CHUNKS_KEY] = "97"  # diff 3 <= tolerance 5
+    calls = _patch_recompute(monkeypatch)
+
+    result = asyncio.run(reconcile_bm25_cache_if_needed(_FakeDb(100), tolerance=5))
+
+    assert result is False
+    assert calls["count"] == 0

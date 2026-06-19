@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://redis:6379/0"
     librechat_api_key: str = "changeme"
     auto_create_tables: bool = True
+    # Auto-reconcile della cache BM25 Redis da Postgres allo startup del backend: ripara
+    # silenziosamente una cache persa/out-of-sync (altrimenti il retrieval sparso smette
+    # di matchare senza errore). Vedi services/sparse_corpus_stats.reconcile_bm25_cache_if_needed.
+    reconcile_bm25_on_startup: bool = True
+    # Tolleranza (numero di chunk) entro cui cache e count(Chunk) sono considerati in sync:
+    # copre la finestra transitoria commit() -> apply_document_delta() durante l'ingestion.
+    reconcile_bm25_tolerance: int = 5
 
     # Agentic retrieval
     agent_max_iterations: int = 3

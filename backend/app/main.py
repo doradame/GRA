@@ -4,10 +4,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
-from app.core.database import engine, Base
+from app.core.database import AsyncSessionLocal, Base, engine
 from app.routers import auth, documents, chat, graph, kb, logs, admin
+from app.services.sparse_corpus_stats import reconcile_bm25_cache_if_needed
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,6 +26,15 @@ async def lifespan(app: FastAPI):
         # Dev convenience only. Production should run Alembic migrations.
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+    if settings.reconcile_bm25_on_startup:
+        # Auto-ripara la cache BM25 Redis da Postgres se mancante/out-of-sync: senza di
+        # questo, un flush Redis renderebbe il retrieval sparso silenziosamente inerte.
+        # Fault-tolerant: un fallimento (Redis/DB non pronti, demo mode) non blocca lo startup.
+        try:
+            async with AsyncSessionLocal() as db:
+                await reconcile_bm25_cache_if_needed(db, settings.reconcile_bm25_tolerance)
+        except Exception:
+            logger.warning("Reconcile cache BM25 allo startup saltato", exc_info=True)
     yield
     await engine.dispose()
 
