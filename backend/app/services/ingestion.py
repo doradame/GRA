@@ -122,15 +122,6 @@ def _build_chunk_embedding_input(
     return "\n\n".join(parts)
 
 
-def _find_chunk_span(text: str, chunk: str, start_from: int = 0) -> tuple[int, int]:
-    start = text.find(chunk, start_from)
-    if start == -1 and start_from:
-        start = text.find(chunk)
-    if start == -1:
-        return start_from, start_from + len(chunk)
-    return start, start + len(chunk)
-
-
 def _pages_for_span(pages: list | None, start: int, end: int) -> tuple[int | None, int | None]:
     if not pages:
         return None, None
@@ -377,6 +368,7 @@ async def process_document(
                 await _set_document_status(db, doc, STATUS_CHUNKING, job=job)
                 logger.info("[ingestion] Chunking text for document_id=%s", document_id)
                 chunks = chunk_text(text)
+                chunk_texts = [span.text for span in chunks]
                 job.chunk_count = len(chunks)
                 job.completed_chunking_at = datetime.utcnow()
                 logger.info("[ingestion] Generated %s chunks for document_id=%s", len(chunks), document_id)
@@ -388,15 +380,15 @@ async def process_document(
                 # al testo di ogni chunk solo per l'embedding e il vettore sparso. Il testo salvato per
                 # citazioni e contesto LLM di risposta (chunk_text_content) resta quello originale.
                 document_context = _build_document_context(filename, doc.category, doc.description)
-                section_titles = [_infer_section_title(chunk) for chunk in chunks]
+                section_titles = [_infer_section_title(chunk_text) for chunk_text in chunk_texts]
 
                 llm_contexts: list[str] = ["" for _ in chunks]
                 if settings.enable_rich_contextual_retrieval:
                     logger.info(
                         "[ingestion] Generazione contesto LLM per %s chunk di document_id=%s", len(chunks), document_id
                     )
-                    llm_contexts = await generate_chunk_contexts(text, chunks)
-                    ctx_input_tokens = _count_tokens_for_model(chunks, settings.contextual_retrieval_model)
+                    llm_contexts = await generate_chunk_contexts(text, chunk_texts)
+                    ctx_input_tokens = _count_tokens_for_model(chunk_texts, settings.contextual_retrieval_model)
                     ctx_output_tokens = _count_tokens_for_model(llm_contexts, settings.contextual_retrieval_model)
                     job.input_tokens = (job.input_tokens or 0) + ctx_input_tokens
                     job.output_tokens = (job.output_tokens or 0) + ctx_output_tokens
@@ -406,8 +398,8 @@ async def process_document(
 
                 job.started_embedding_at = datetime.utcnow()
                 embedding_inputs = [
-                    _build_chunk_embedding_input(document_context, section_title, chunk, llm_context)
-                    for chunk, section_title, llm_context in zip(chunks, section_titles, llm_contexts)
+                    _build_chunk_embedding_input(document_context, section_title, chunk_text, llm_context)
+                    for chunk_text, section_title, llm_context in zip(chunk_texts, section_titles, llm_contexts)
                 ]
 
                 # BM25 globale: registra i termini di questo documento nel vocabolario condiviso
@@ -441,14 +433,14 @@ async def process_document(
 
                 qdrant_points = []
                 chunk_records = []
-                span_cursor = 0
-                for idx, (chunk_text_content, embedding, section_title, embedding_input, chunk_tokens) in enumerate(
-                    zip(chunks, embeddings, section_titles, embedding_inputs, per_chunk_tokens)
+                for idx, (chunk_text_content, embedding, section_title, embedding_input, chunk_tokens, chunk_span) in enumerate(
+                    zip(chunk_texts, embeddings, section_titles, embedding_inputs, per_chunk_tokens, chunks)
                 ):
                     text_hash = _hash_text(chunk_text_content)
                     token_count = _token_count(chunk_text_content, settings.embedding_model)
-                    span_start, span_end = _find_chunk_span(text, chunk_text_content, span_cursor)
-                    span_cursor = span_end
+                    # Span dal chunker (offset-tracking): text[span.start:span.end] == chunk_text_content,
+                    # quindi le citazioni sono verificabili e allineate alle pagine (vedi chunking.ChunkSpan).
+                    span_start, span_end = chunk_span.start, chunk_span.end
                     page_start, page_end = _pages_for_span(parsed.pages, span_start, span_end)
                     chunk_id = _stable_uuid("chunk", document_id, idx, text_hash)
                     qdrant_id = chunk_id

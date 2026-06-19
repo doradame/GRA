@@ -3,7 +3,6 @@ from types import SimpleNamespace
 from app.services.ingestion import (
     _build_chunk_embedding_input,
     _build_document_context,
-    _find_chunk_span,
     _infer_section_title,
     _pages_for_span,
     _safe_filename,
@@ -32,18 +31,19 @@ def test_token_count_and_section_title_helpers():
     assert _infer_section_title("This is a normal sentence.") is None
 
 
-def test_chunk_span_and_page_mapping_helpers():
+def test_pages_for_span_maps_chunk_to_page_range():
     text = "page one text\n\npage two text"
-    start, end = _find_chunk_span(text, "page two", 0)
-
-    assert text[start:end] == "page two"
-    assert (start, end) == (15, 23)
-
     pages = [
         SimpleNamespace(page=1, start_char=0, end_char=13),
         SimpleNamespace(page=2, start_char=15, end_char=len(text)),
     ]
-    assert _pages_for_span(pages, start, end) == (2, 2)
+
+    # Chunk interamente nella pagina 2.
+    assert _pages_for_span(pages, 15, 23) == (2, 2)
+    # Chunk a cavallo del separatore tra pagina 1 e 2.
+    assert _pages_for_span(pages, 10, 20) == (1, 2)
+    # Nessuna pagina (formato non-PDF) -> (None, None).
+    assert _pages_for_span(None, 0, 10) == (None, None)
 
 
 def test_build_document_context_includes_only_provided_fields():
