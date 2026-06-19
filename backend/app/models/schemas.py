@@ -220,6 +220,7 @@ class QueryLogList(BaseModel):
 
 # Admin monitoring
 class ServiceHealthOut(BaseModel):
+    id: str
     service: str
     status: str
     latency_ms: Optional[int] = None
@@ -227,15 +228,10 @@ class ServiceHealthOut(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
-
-class IngestionMetricsOut(BaseModel):
-    items: List[IngestionJobOut]
-    total: int
-
-
-class QueryMetricsOut(BaseModel):
-    items: List[QueryLogOut]
-    total: int
+    @field_validator("id", mode="before")
+    @classmethod
+    def _uuid_to_str(cls, v):
+        return str(v)
 
 
 class AdminMetricsOut(BaseModel):
