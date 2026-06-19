@@ -213,8 +213,8 @@ class VectorStore:
         return NamedVector(name=settings.qdrant_dense_vector_name, vector=vector)
 
     def health(self):
-        """Call the Qdrant health endpoint to verify connectivity."""
-        return self.client.health()
+        """Verify Qdrant connectivity by listing collections."""
+        return self.client.get_collections()
 
 
 vector_store = VectorStore()
