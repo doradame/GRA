@@ -26,6 +26,7 @@ from app.services.sparse_corpus_stats import (
     subtract_document_contribution,
 )
 from app.services.contextual_chunking import generate_chunk_contexts
+from app.services.api_usage import estimate_cost_usd
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,10 @@ def _token_count(text: str, model: str | None = None) -> int:
         # tiktoken may lazily download encodings in fresh environments. Keep ingestion offline-safe.
         words = len(text.split())
         return max(1, int(words * 1.35))
+
+
+def _count_tokens_for_model(texts: list[str], model: str) -> int:
+    return sum(_token_count(t, model) for t in texts)
 
 
 def _infer_section_title(text: str) -> str | None:
@@ -335,10 +340,16 @@ async def process_document(
                 logger.info("[ingestion] Document %s already completed; skipping", document_id)
                 return
             job = await _get_or_create_job(db, document_id, task_id, retry_count)
+            job.input_tokens = 0
+            job.output_tokens = 0
+            job.cost_estimate_usd = 0.0
+            job.entity_count = 0
+            job.relation_count = 0
 
             try:
                 await _cleanup_document_artifacts(db, document_id)
 
+                job.started_parsing_at = datetime.utcnow()
                 await _set_document_status(db, doc, STATUS_PARSING, job=job)
                 logger.info("[ingestion] Downloading from object storage: %s", storage_key)
                 data = storage.download(storage_key)
@@ -357,13 +368,17 @@ async def process_document(
                 doc.text_chars = len(text)
                 doc.ocr_used = parsed.ocr_used
                 await db.commit()
+                job.completed_parsing_at = datetime.utcnow()
                 logger.info("[ingestion] Extracted %s characters of text from document_id=%s", len(text), document_id)
                 if not text:
                     raise ValueError("No extractable text found in document")
 
+                job.started_chunking_at = datetime.utcnow()
                 await _set_document_status(db, doc, STATUS_CHUNKING, job=job)
                 logger.info("[ingestion] Chunking text for document_id=%s", document_id)
                 chunks = chunk_text(text)
+                job.chunk_count = len(chunks)
+                job.completed_chunking_at = datetime.utcnow()
                 logger.info("[ingestion] Generated %s chunks for document_id=%s", len(chunks), document_id)
                 if not chunks:
                     raise ValueError("Document text did not produce any chunks")
@@ -381,7 +396,15 @@ async def process_document(
                         "[ingestion] Generazione contesto LLM per %s chunk di document_id=%s", len(chunks), document_id
                     )
                     llm_contexts = await generate_chunk_contexts(text, chunks)
+                    ctx_input_tokens = _count_tokens_for_model(chunks, settings.contextual_retrieval_model)
+                    ctx_output_tokens = _count_tokens_for_model(llm_contexts, settings.contextual_retrieval_model)
+                    job.input_tokens = (job.input_tokens or 0) + ctx_input_tokens
+                    job.output_tokens = (job.output_tokens or 0) + ctx_output_tokens
+                    job.cost_estimate_usd = (job.cost_estimate_usd or 0.0) + estimate_cost_usd(
+                        settings.contextual_retrieval_model, ctx_input_tokens, ctx_output_tokens
+                    )
 
+                job.started_embedding_at = datetime.utcnow()
                 embedding_inputs = [
                     _build_chunk_embedding_input(document_context, section_title, chunk, llm_context)
                     for chunk, section_title, llm_context in zip(chunks, section_titles, llm_contexts)
@@ -406,6 +429,12 @@ async def process_document(
                 await _set_document_status(db, doc, STATUS_EMBEDDING, job=job)
                 logger.info("[ingestion] Generating embeddings for %s chunks of document_id=%s", len(chunks), document_id)
                 embeddings = await embed_texts(embedding_inputs)
+                emb_input_tokens = _count_tokens_for_model(embedding_inputs, settings.embedding_model)
+                job.input_tokens = (job.input_tokens or 0) + emb_input_tokens
+                job.cost_estimate_usd = (job.cost_estimate_usd or 0.0) + estimate_cost_usd(
+                    settings.embedding_model, emb_input_tokens, 0
+                )
+                job.completed_embedding_at = datetime.utcnow()
                 logger.info("[ingestion] Embeddings generated for document_id=%s", document_id)
                 if len(embeddings) != len(chunks):
                     raise ValueError(f"Embedding count mismatch: chunks={len(chunks)} embeddings={len(embeddings)}")
@@ -476,9 +505,11 @@ async def process_document(
 
                 # Bulk insert vectors
                 if qdrant_points:
+                    job.started_vector_indexing_at = datetime.utcnow()
                     await _set_document_status(db, doc, STATUS_VECTOR_INDEXING, job=job)
                     logger.info("[ingestion] Upserting %s vectors to Qdrant for document_id=%s", len(qdrant_points), document_id)
                     vector_store.upsert(qdrant_points)
+                    job.completed_vector_indexing_at = datetime.utcnow()
                     logger.info("[ingestion] Vectors upserted for document_id=%s", document_id)
 
                 # Pubblica il contributo BM25 di questo documento alle statistiche globali (df/N
@@ -501,6 +532,7 @@ async def process_document(
                     len(chunks),
                 )
 
+                job.started_graph_indexing_at = datetime.utcnow()
                 await _set_document_status(db, doc, STATUS_GRAPH_INDEXING, job=job)
                 logger.info("[ingestion] Adding document node to graph: document_id=%s", document_id)
                 graph_store.add_document(document_id, filename, content_type, user_id=user_id)
@@ -554,11 +586,23 @@ async def process_document(
                         len(relations),
                         document_id,
                     )
+                    job.entity_count = (job.entity_count or 0) + len(entities)
+                    job.relation_count = (job.relation_count or 0) + len(relations)
+
+                    rel_input_tokens = _token_count(chunk_text_content, settings.openai_model)
+                    rel_output_tokens = _count_tokens_for_model([str(r) for r in relations], settings.openai_model)
+                    job.input_tokens = (job.input_tokens or 0) + rel_input_tokens
+                    job.output_tokens = (job.output_tokens or 0) + rel_output_tokens
+                    job.cost_estimate_usd = (job.cost_estimate_usd or 0.0) + estimate_cost_usd(
+                        settings.openai_model, rel_input_tokens, rel_output_tokens
+                    )
+
                     graph_store.add_entities_and_relations(chunk_id, entities, relations)
                     if (idx + 1) % progress_step == 0 or idx + 1 == len(chunks):
                         graph_progress = 80 + int(((idx + 1) / len(chunks)) * 18)
                         await _set_document_status(db, doc, STATUS_GRAPH_INDEXING, job=job, progress=graph_progress)
 
+                job.completed_graph_indexing_at = datetime.utcnow()
                 await _set_document_status(db, doc, STATUS_COMPLETED, job=job)
                 await db.refresh(doc)
                 logger.info("[ingestion] Processing completed for document_id=%s status=%s", document_id, doc.status)
