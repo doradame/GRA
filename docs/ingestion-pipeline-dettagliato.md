@@ -137,8 +137,10 @@ Questo rende i retry **deterministici**: ogni esecuzione riparte da zero.
 
 #### Fase 3: Embedding (`STATUS_EMBEDDING`, progresso 45)
 
-1. Chiama `embed_texts(chunks)` in modo asincrono.
-2. Verifica che `len(embeddings) == len(chunks)`, altrimenti errore.
+1. Per ogni chunk, costruisce l'input di embedding con `_build_chunk_embedding_input` ("contextual retrieval"): un header con filename del documento + `category`/`description` impostati all'upload + il `section_title` inferito del chunk, seguito dal testo del chunk. Se `ENABLE_RICH_CONTEXTUAL_RETRIEVAL=true` (default), `services/contextual_chunking.py` genera anche 1-2 frasi di contesto situazionale via LLM (una chiamata per chunk, modello `CONTEXTUAL_RETRIEVAL_MODEL`, documento troncato a `CONTEXTUAL_RETRIEVAL_MAX_DOC_CHARS`, concorrenza limitata da `CONTEXTUAL_RETRIEVAL_CONCURRENCY`), inserite tra il titolo di sezione e il testo — torna a stringa vuota in modalità demo o su errore LLM. Questo testo "contestualizzato" è solo l'*input* per embedding denso e vettore sparso: il `text` del chunk salvato su Postgres/Qdrant (usato per citazioni e contesto LLM) non viene modificato.
+2. Chiama `embed_texts(embedding_inputs)` in modo asincrono per il vettore denso.
+3. Verifica che `len(embeddings) == len(chunks)`, altrimenti errore.
+4. Per il vettore sparso: tokenizza ogni `embedding_input` (`tokenize_sparse`), registra i nuovi termini nel vocabolario globale (`get_or_create_term_ids`), legge uno snapshot delle statistiche BM25 correnti (`get_global_stats_snapshot`) e calcola il vettore pesato per chunk (`weighted_sparse_vector`) — vedi §8.
 
 #### Fase 4: Costruzione record Chunk e punti Qdrant
 
@@ -157,12 +159,13 @@ Vengono quindi creati:
 - un oggetto `Chunk` da salvare in PostgreSQL
 - un `PointStruct` Qdrant con payload ricco (testo, metadati, pagine, hash, titolo sezione, stato, ecc.)
 
-I vettori Qdrant sono costruiti con `vector_store.build_point_vector(embedding, build_sparse_vector(chunk_text))`, quindi includono sia il vettore denso che quello sparso (se abilitato).
+I vettori Qdrant sono costruiti con `vector_store.build_point_vector(embedding, sparse_vector)`, dove `sparse_vector` è il vettore BM25 pesato calcolato in Fase 3 (§8) — quindi includono sia il vettore denso che quello sparso (se abilitato).
 
 #### Fase 5: Indicizzazione vettoriale (`STATUS_VECTOR_INDEXING`, progresso 65)
 
 1. Inserisce in blocco i record `Chunk` nel database con `db.add_all(chunk_records)`.
-2. Effettua l’upsert in Qdrant con `vector_store.upsert(qdrant_points)`, eventualmente in batch secondo `settings.qdrant_upsert_batch_size` (default 500).
+2. Effettua l'upsert in Qdrant con `vector_store.upsert(qdrant_points)`, eventualmente in batch secondo `settings.qdrant_upsert_batch_size` (default 500).
+3. Solo dopo che l'upsert Qdrant ha successo, salva il contributo BM25 del documento (`doc.sparse_term_counts`/`sparse_total_tokens`) e lo applica alle statistiche globali con `apply_document_delta` (§8) — così un fallimento dell'upsert non corrompe le statistiche corpus-wide con un documento mai effettivamente indicizzato.
 
 #### Fase 6: Indicizzazione grafo (`STATUS_GRAPH_INDEXING`, progresso 80)
 
@@ -196,11 +199,15 @@ Il parsing determina il formato in base al MIME type rilevato con `python-magic`
 
 ### 5.1 PDF
 
-- Usa `pypdf.PdfReader`.
-- Per ogni pagina chiama `page.extract_text()`.
+- Usa `pdfplumber` (layout-aware, CPU-only — nessun modello ML esterno) invece del vecchio `pypdf.PdfReader`.
+- Per ogni pagina (`_extract_pdf_page`):
+    - Rileva le tabelle con `page.find_tables(table_settings=_TABLE_SETTINGS)`, dove `_TABLE_SETTINGS = {"vertical_strategy": "lines_strict", "horizontal_strategy": "lines_strict"}`. Le strategie di default di pdfplumber (`"lines"`/`"text"`) inferiscono colonne dalla posizione del testo e producono falsi positivi sistematici su documenti di prosa densa senza una vera griglia tabellare (verificato su un dossier parlamentare reale: rilevava "tabelle" da paragrafi normali) — `lines_strict` richiede linee di confine reali nel PDF.
+    - Esclude l'area delle tabelle rilevate dal testo libero (`text_page.outside_bbox(table.bbox)`) per evitare di duplicarne il contenuto in forma illeggibile (celle appiattite su una riga).
+    - Ogni tabella viene renderizzata come Markdown (`_render_markdown_table`) e accodata dopo il testo libero della pagina, con etichetta `Tabella N:`.
+    - Se la pagina contiene immagini, viene aggiunta una nota `[Pagina con N immagine/i non elaborata/e]` (nessun modello vision: si segnala solo la presenza di contenuto non testuale, non viene descritto).
 - Costruisce una lista di `PageText(page, text, start_char, end_char)` che mantiene la mappa carattere→pagina.
-- Il testo completo è l’unione delle pagine separate da `\n\n`.
-- Se `enable_ocr=True` e il testo estratto è più corto di `min_text_chars_for_ocr`, tenta l’OCR con `pypdfium2` + `pytesseract`, renderizzando ogni pagina a scale=2.
+- Il testo completo è l'unione delle pagine separate da `\n\n`.
+- Se `enable_ocr=True` e il testo estratto è più corto di `min_text_chars_for_ocr`, tenta l'OCR con `pypdfium2` + `pytesseract`, renderizzando ogni pagina a scale=2.
 
 ### 5.2 DOCX/DOC
 
@@ -271,27 +278,20 @@ Questa modalità permette di testare lo stack senza chiave OpenAI, ma le rispost
 
 ---
 
-## 8. Vettori sparsi — `services/sparse_vectors.py`
+## 8. Vettori sparsi — `services/sparse_vectors.py` + `services/sparse_corpus_stats.py`
 
 I vettori sparsi sono opzionali e controllati da `settings.qdrant_enable_native_sparse` (default `False`).
 
-`build_sparse_vector` implementa un algoritmo **BM25-like**:
+Il vecchio algoritmo hashava i termini in bucket (`BLAKE2b` mod 1.000.003) e calcolava IDF/lunghezza media solo sul corpus del singolo documento in fase di indexing — alle query mancava un corpus di riferimento stabile. È stato sostituito da un BM25 reale e **globale** (corpus-wide), con vocabolario stabile:
 
-1. Tokenizza il testo con NLTK (`nltk.word_tokenize`) quando disponibile, con fallback su split per parole.
-2. Rimuove stopwords inglesi e italiane (da NLTK o fallback hardcoded).
-3. Filtra token corti (< 3 caratteri) e non alfabetici.
-4. Calcola i pesi BM25 per ogni termine rispetto al corpus dei chunk del documento (`corpus_tokens`):
-   - `tf` = frequenza del termine nel documento
-   - `idf` = `log((N - df + 0.5) / (df + 0.5) + 1.0)` se il corpus ha più di un documento, altrimenti `1.0`
-   - lunghezza del documento normalizzata rispetto alla lunghezza media del corpus
-5. Per ogni termine calcola un indice sparso con `BLAKE2b` digest di 8 byte modulo 1.000.003 bucket.
-6. Somma i pesi dei termini che collidono nello stesso bucket.
-7. Normalizza L2.
-8. Restituisce un `SparseVector` ordinato per indice.
+- **Vocabolario stabile (`sparse_corpus_stats.get_or_create_term_ids`)**: ogni termine ha un id intero permanente nella tabella Postgres `sparse_terms` (assegnato una sola volta, non viene mai ri-assegnato — Qdrant referenzia questi id come indici del vettore sparso, quindi devono restare stabili nel tempo).
+- **Statistiche corpus-wide in Redis**: `bm25:vocab`, `bm25:df` (document frequency per termine), `bm25:total_chunks`, `bm25:total_tokens` — calcolate sull'intero corpus indicizzato (non sul singolo documento) e cacheate per letture rapide a query-time senza bisogno di una sessione DB (`get_term_ids_cached` + `get_global_stats_snapshot`).
+- **`weighted_sparse_vector(tokens, term_id_map, global_df, total_chunks, avg_doc_len, k1=1.5, b=0.75)`**: funzione pura che calcola il peso BM25 standard per ciascun termine rispetto alle statistiche globali e restituisce un `SparseVector` indicizzato per `term_id` (niente più collisioni di bucket).
+- **`build_query_sparse_vector(text)`**: orchestrazione sincrona usata a query-time, legge solo da Redis (nessuna sessione DB necessaria).
+- **Contributo per documento**: ogni `Document` salva `sparse_term_counts` (conteggio per termine) e `sparse_total_tokens`, così il suo contributo alle statistiche globali può essere sottratto in modo pulito su delete/reindex (`subtract_document_contribution`) e poi ri-applicato (`apply_document_delta`) senza dover ricalcolare tutto il corpus.
+- La tokenizzazione (`tokenize_sparse`: NLTK con fallback, stopwords IT/EN, filtro token corti/non alfabetici) è rimasta la stessa di prima.
 
-`tokenize_sparse` esporta la tokenizzazione per la costruzione del corpus all’interno di `process_document`.
-
-Questo fornisce una rappresentazione BM25 pesata per la ricerca ibrida su Qdrant, più robusta della precedente bag-of-words con 21 stopwords.
+Nella pipeline di ingestion (`services/ingestion.py`), prima dell'embedding si raccolgono i token di tutti i chunk del documento, si registrano i nuovi termini nel vocabolario (`get_or_create_term_ids`), si legge uno snapshot delle statistiche globali correnti, e si calcola il vettore sparso pesato per ogni chunk con quello snapshot. Dopo l'upsert su Qdrant, il contributo del documento viene salvato e applicato alle statistiche globali (`apply_document_delta`).
 
 ---
 
@@ -450,6 +450,8 @@ Wrapper attorno a MinIO (API S3 compatibile).
 - `content_type`, `size_bytes`
 - `storage_key` (percorso MinIO: `{user_id}/{doc_id}/{filename}`)
 - `parser`, `page_count`, `text_chars`, `ocr_used`
+- `category`, `description` (impostati all'upload, usati nell'header di contextual retrieval — vedi §4.4 Fase 3)
+- `sparse_term_counts` (JSONB: conteggio per termine BM25 contribuito da questo documento), `sparse_total_tokens` — il "contributo" usato per sottrarre/ri-applicare in modo pulito le statistiche BM25 globali su delete/reindex (vedi §8)
 - `status` (stringa descrittiva)
 - `error_message`
 - `created_by` (FK → User)
@@ -559,7 +561,7 @@ routers/documents.py
 
 ## 16. Osservazioni e possibili miglioramenti
 
-1. **Estrazione relazioni limitata ai primi 48 chunk**: le entità vengono estratte da tutti i chunk con GLiNER, ma le relazioni LLM sono limitate ai primi `MAX_RELATION_EXTRACTION_CHUNKS` chunk per contenere i costi. Documenti lunghi potrebbero perdere relazioni sui chunk successivi; si potrebbe campionare chunk rappresentativi o usare un modello locale anche per le relazioni.
+1. ~~**Estrazione relazioni limitata ai primi 48 chunk**~~ — **Risolto**: il cap `MAX_RELATION_EXTRACTION_CHUNKS` è stato rimosso; sia l'estrazione entità (GLiNER) sia quella relazioni (LLM) ora girano su *tutti* i chunk del documento. Il cap lasciava la maggior parte delle entità nei documenti lunghi senza alcuna relazione entità-entità.
 
 2. **OCR disabilitato di default**: i PDF scannerizzati non vengono processati se non si imposta `ENABLE_OCR=true`. Inoltre l’OCR perde le informazioni di pagina (`pages`) perché `_extract_pdf_ocr` non restituisce `PageText`.
 
@@ -595,7 +597,8 @@ routers/documents.py
 | `services/parsing.py` | `extract_document`, `_extract_pdf`, `_extract_docx`, `_extract_html` | Estrazione testo |
 | `services/chunking.py` | `chunk_text` | Segmentazione |
 | `services/embeddings.py` | `embed_texts`, `_fallback_embedding` | Embedding denso |
-| `services/sparse_vectors.py` | `build_sparse_vector` | Embedding sparso |
+| `services/sparse_vectors.py` | `weighted_sparse_vector`, `build_query_sparse_vector` | Embedding sparso BM25 |
+| `services/sparse_corpus_stats.py` | `get_or_create_term_ids`, `get_global_stats_snapshot`, `apply_document_delta` | Vocabolario e statistiche BM25 globali |
 | `services/vector_store.py` | `VectorStore.upsert`, `search_hybrid` | Qdrant |
 | `services/graph_store.py` | `GraphStore.add_*`, `delete_document` | Neo4j |
 | `services/extraction.py` | `extract_relations`, `extract_entities_relations` | LLM relation extraction (legacy) |

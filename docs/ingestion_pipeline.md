@@ -7,10 +7,10 @@
 3. The pipeline creates or resumes an `IngestionJob`, cleans derived artifacts, then moves through `parsing`, `chunking`, `embedding`, `vector_indexing`, and `graph_indexing`.
 4. Chunk IDs and Qdrant point IDs are deterministic, so retries rebuild instead of duplicating.
 5. Qdrant payloads include `user_id`, `document_id`, `text_hash`, `token_count`, `section_title`, `char_start`, `char_end`, `page_start`, `page_end`, `document_page_count`, and status metadata.
-6. Sparse vectors are computed with a BM25-like algorithm over the document's own chunk corpus.
+6. Sparse vectors use a real, global BM25 (`services/sparse_vectors.py` + `services/sparse_corpus_stats.py`): a stable term vocabulary in Postgres (`sparse_terms`), with IDF/avg-doc-length computed over the *entire* indexed corpus (not just the current document) and cached in Redis (`bm25:vocab`/`bm25:df`/`bm25:total_chunks`/`bm25:total_tokens`). Each `Document` stores its own term-count contribution (`sparse_term_counts`/`sparse_total_tokens`) so it can be cleanly subtracted from the global stats on delete/reindex.
 7. Neo4j receives document, chunk, entity, and relation data after vector indexing succeeds:
    - **Entities** are extracted from **every chunk** using the local **GLiNER** NER model.
-   - **Relations** are inferred by the LLM only for the first `MAX_RELATION_EXTRACTION_CHUNKS` chunks (default 48) to control API cost.
+   - **Relations** are inferred by the LLM, also over **every chunk** — no chunk cap (a previous chunk cap left most entities in long documents without any entity-entity relation).
 
 ## Recovery Rules
 
@@ -28,8 +28,6 @@ Key environment variables for the graph extraction stage:
 | `GLINER_MODEL` | `gliner-community/gliner_small-v2.5` | Hugging Face model used for NER |
 | `GLINER_LABELS` | `Persona,Organizzazione,...` | Comma-separated entity labels |
 | `GLINER_THRESHOLD` | `0.5` | Confidence threshold for accepted entities |
-| `MAX_RELATION_EXTRACTION_CHUNKS` | `48` | Max chunks sent to the LLM for relation extraction |
-| `MAX_GRAPH_EXTRACTION_CHUNKS` | `48` | Legacy fallback for relation chunk limit |
 
 ## Next Quality Gates
 
