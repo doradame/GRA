@@ -158,8 +158,13 @@ async def critic_node(state: AgentState) -> AgentState:
                     "role": "user",
                     "content": (
                         f"Domanda: {query}\n\n"
-                        f"Contesto raccolto:\n{context[:6000] or '(vuoto)'}\n\n"
-                        f"Risposta bozza:\n{answer[:2000] or '(vuota)'}"
+                        # Niente troncamento aggressivo: il critic deve giudicare la bozza/contesto
+                        # reali, non una versione tagliata a metà frase (con modelli più verbosi e
+                        # contesti ricchi, un taglio piccolo produce falsi "tronca"/"fonte non nel
+                        # contesto" perché il critic vede solo l'inizio). Il cap resta solo come
+                        # argine a input patologicamente lunghi.
+                        f"Contesto raccolto:\n{context[:40000] or '(vuoto)'}\n\n"
+                        f"Risposta bozza:\n{answer[:12000] or '(vuota)'}"
                     ),
                 },
             ],
