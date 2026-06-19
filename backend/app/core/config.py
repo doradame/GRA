@@ -18,7 +18,14 @@ class Settings(BaseSettings):
     minio_secret_key: str = "minioadmin"
     minio_bucket: str = "documents"
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
+    # Modello "pesante": synthesizer + critic (agent/nodes.py) e build_context/chat_completion
+    # legacy in rag_engine.py — il punto a maggior ritorno per la qualità percepita, chiamato
+    # 1-3 volte a domanda (synthesizer sempre, critic una volta per iterazione del retry loop).
+    openai_model: str = "gpt-5.4"
+    # Modelli "leggeri": compiti strutturati/di classificazione, chiamati ad ogni domanda ma
+    # con poco bisogno di ragionamento profondo.
+    router_model: str = "gpt-5.4-mini"
+    cypher_model: str = "gpt-5.4-mini"
     embedding_model: str = "text-embedding-3-large"
     embedding_dimensions: int = 3072
     embedding_batch_size: int = 96
@@ -38,7 +45,9 @@ class Settings(BaseSettings):
         "Reportistica e Analisi,Risorse umane,Corrispondenza,Altro"
     )
     enable_rich_contextual_retrieval: bool = True
-    contextual_retrieval_model: str = "gpt-4o-mini"
+    # Modello "nano": chiamato una volta per chunk in ingestion (alto volume, basso bisogno
+    # di ragionamento) — vedi anche community_summary_model sotto.
+    contextual_retrieval_model: str = "gpt-5.4-nano"
     contextual_retrieval_max_doc_chars: int = 12000
     contextual_retrieval_concurrency: int = 5
     secret_key: str = "supersecretchangeme"
@@ -60,7 +69,9 @@ class Settings(BaseSettings):
     # Community detection
     community_detection_algorithm: str = "louvain"
     community_detection_resolution: float = 1.0
-    community_summary_model: str = "gpt-4o-mini"
+    # Stesso livello "nano" di contextual_retrieval_model: chiamato una volta per community
+    # ad ogni run di community detection (centinaia di chiamate sul grafo reale).
+    community_summary_model: str = "gpt-5.4-nano"
     community_summary_max_entities: int = 50
 
     class Config:

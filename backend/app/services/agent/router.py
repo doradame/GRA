@@ -89,7 +89,7 @@ async def semantic_router(state: AgentState) -> AgentState:
             {"role": "user", "content": f"Utente: {query}"},
         ]
         response = await client.chat.completions.create(
-            model=settings.openai_model,
+            model=settings.router_model,
             messages=messages,
             temperature=0.0,
             response_format={"type": "json_object"},

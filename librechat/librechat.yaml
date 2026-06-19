@@ -13,7 +13,7 @@ endpoints:
       apiKey: "f13d1fed3154ef1206a9278a22574db620d72efaeea07fedb4a1266247b69f96"
       baseURL: "http://backend:8000/api/v1"
       models:
-        default: ["gpt-4o-mini", "gpt-4o"]
+        default: ["gpt-5.4"]
         fetch: false
       titleConvo: false
       titleModel: "gpt-4o-mini"

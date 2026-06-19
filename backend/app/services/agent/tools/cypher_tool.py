@@ -80,7 +80,7 @@ async def generate_cypher(query: str, previous_error: str | None = None) -> Dict
         messages.append({"role": "user", "content": f"La query precedente ha dato errore: {previous_error}. Correggila."})
 
     response = await client.chat.completions.create(
-        model=settings.openai_model,
+        model=settings.cypher_model,
         messages=messages,
         temperature=0.0,
         response_format={"type": "json_object"},
