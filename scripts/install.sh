@@ -3,7 +3,22 @@
 # shellcheck shell=bash source-path=SCRIPTDIR
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
+
+# Supporto per curl ... | bash: se lo script e' pipe-ato o i moduli non sono presenti, clona il repo.
+if [[ -z "$SCRIPT_SOURCE" || "$SCRIPT_SOURCE" == "-" || ! -d "${SCRIPT_SOURCE%/*}/setup" ]]; then
+    REPO_URL="${REPO_URL:-https://github.com/tuo-org/graph-rag-assistant.git}"
+    TARGET_DIR="${HOME}/graph-rag-assistant"
+    echo "[INFO] Moduli installer non trovati. Clonazione repository da $REPO_URL in $TARGET_DIR..."
+    if [[ ! -d "$TARGET_DIR/.git" ]]; then
+        git clone "$REPO_URL" "$TARGET_DIR"
+    else
+        echo "[INFO] Repository gia' presente in $TARGET_DIR."
+    fi
+    exec bash "$TARGET_DIR/scripts/install.sh"
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
 SETUP_DIR="$SCRIPT_DIR/setup"
 
 PROJECT_DIR=""
