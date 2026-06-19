@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Logging helpers and ANSI color codes used by the VPS installer.
+# shellcheck shell=bash source-path=SCRIPTDIR
 
 C_RESET='\033[0m'
 C_BOLD='\033[1m'

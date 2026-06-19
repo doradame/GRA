@@ -21,11 +21,16 @@ ask_required() {
     printf -v "$var_name" '%s' "$value"
 }
 
-# ask_password: reads and confirms a password (minimum 12 characters) without echoing input.
-# Arguments:
-#   $1 - prompt message to display
-#   $2 - name of the variable where the password will be stored
+# Chiede una password all'utente con conferma.
+# Argomenti:
+#   $1: testo del prompt
+#   $2: nome della variabile in cui salvare la password
 ask_password() {
+    if [[ ! -t 0 ]]; then
+        log_error "Richiesto terminale interattivo per la password."
+        return 1
+    fi
+
     local prompt="$1"
     local var_name="$2"
     local password=""
@@ -33,14 +38,21 @@ ask_password() {
     local original_stty
 
     original_stty=$(stty -g)
-    # shellcheck disable=SC2317
     restore_echo() { stty "$original_stty"; }
     trap restore_echo INT TERM EXIT
 
     while true; do
-        read -rsp "$prompt: " password
+        if ! read -rsp "$prompt: " password; then
+            log_error "Input password interrotto."
+            trap - INT TERM EXIT
+            return 1
+        fi
         echo
-        read -rsp "Conferma $prompt: " confirm
+        if ! read -rsp "Conferma $prompt: " confirm; then
+            log_error "Input conferma password interrotto."
+            trap - INT TERM EXIT
+            return 1
+        fi
         echo
         if [[ "$password" != "$confirm" ]]; then
             log_error "Le password non coincidono. Riprova."
