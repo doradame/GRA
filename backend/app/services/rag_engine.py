@@ -2,6 +2,7 @@ import json
 import time
 import uuid
 import re
+import tiktoken
 from typing import List, Dict, Any, AsyncGenerator
 from openai import AsyncOpenAI
 from app.core.config import get_settings
@@ -13,6 +14,7 @@ from app.models.schemas import Citation
 from app.services.agent.graph import agent_graph
 from app.services.agent.state import AgentState
 from app.services.query_log import record_query_log
+from app.services.api_usage import estimate_cost_usd
 from app.services.reranker import rerank_cross_encoder
 from app.services.retrieval_utils import (
     format_reference,
@@ -23,6 +25,15 @@ from app.services.retrieval_utils import (
 
 settings = get_settings()
 client = AsyncOpenAI(api_key=settings.openai_api_key)
+
+
+def _token_count(text: str, model: str | None = None) -> int:
+    try:
+        encoding = tiktoken.encoding_for_model(model or settings.openai_model)
+        return len(encoding.encode(text))
+    except Exception:
+        words = len(text.split())
+        return max(1, int(words * 1.35))
 
 SYSTEM_PROMPT = """Sei un assistente conversazionale che aiuta l'utente usando i documenti caricati nella knowledge base.
 
@@ -168,6 +179,11 @@ async def chat_completion(
     content = result.get("answer") or ""
     citations = result.get("citations", [])
 
+    context_text = str(result.get("context", ""))
+    input_tokens = _token_count(f"{user_query}\n\n{context_text}", settings.openai_model)
+    output_tokens = _token_count(content, settings.openai_model)
+    cost_estimate_usd = estimate_cost_usd(settings.openai_model, input_tokens, output_tokens)
+
     await record_query_log(
         source=source,
         user_id=caller_id,
@@ -179,6 +195,11 @@ async def chat_completion(
         citation_count=len(citations),
         error=result.get("error"),
         latency_ms=int((time.monotonic() - start) * 1000),
+        tool_used=result.get("tool_used"),
+        iteration_count=result.get("iteration"),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost_estimate_usd=cost_estimate_usd,
     )
 
     if stream:

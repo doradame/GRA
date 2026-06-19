@@ -18,6 +18,11 @@ async def record_query_log(
     citation_count: int = 0,
     error: str | None = None,
     latency_ms: int | None = None,
+    tool_used: str | None = None,
+    iteration_count: int | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    cost_estimate_usd: float | None = None,
 ) -> None:
     """Best-effort persistence of a chat query for the admin log viewer. Never raises."""
     try:
@@ -34,6 +39,11 @@ async def record_query_log(
                     citation_count=citation_count,
                     error=error,
                     latency_ms=latency_ms,
+                    tool_used=tool_used,
+                    iteration_count=iteration_count,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_estimate_usd=cost_estimate_usd,
                 )
             )
             await session.commit()
