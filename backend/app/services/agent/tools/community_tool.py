@@ -6,7 +6,7 @@ from app.services.agent.state import CommunityToolResult
 from app.services.embeddings import embed_text
 from app.services.vector_store import vector_store
 from app.services.graph_store import graph_store
-from app.services.sparse_vectors import build_sparse_vector
+from app.services.sparse_vectors import build_query_sparse_vector
 from app.services.retrieval_utils import rerank_hybrid, diversify_results
 
 settings = get_settings()
@@ -19,6 +19,18 @@ async def community_tool(
     top_k: int = 12,
     score_threshold: float | None = None,
 ) -> CommunityToolResult:
+    max_summaries = settings.agent_max_community_summaries
+
+    # Le domande "summary" sono per definizione olistiche ("di cosa parla tutto il KB?"):
+    # i riassunti di livello "root" (massima aggregazione, vedi community_detection.py)
+    # coprono l'intero grafo senza dipendere da quali chunk il retrieval vettoriale trova
+    # per primi. Niente ricerca vettoriale necessaria in questo caso, più rapido e completo.
+    root_summaries = _fetch_root_community_summaries()
+    if root_summaries:
+        return _build_result(root_summaries[:max_summaries])
+
+    # Fallback (nessuna community detection ancora eseguita): risali dai chunk più simili
+    # alla query alle entità menzionate, poi alle community leaf a cui appartengono.
     query_vector = await embed_text(query)
     threshold = settings.retrieval_score_threshold if score_threshold is None else score_threshold
     search_k = max(top_k, top_k * max(1, settings.retrieval_oversampling_factor))
@@ -27,7 +39,7 @@ async def community_tool(
     if settings.qdrant_enable_native_sparse:
         results = vector_store.search_hybrid(
             query_vector,
-            build_sparse_vector(query),
+            build_query_sparse_vector(query),
             top_k=search_k,
             filter=query_filter,
         )
@@ -44,15 +56,15 @@ async def community_tool(
     chunk_ids = [r["payload"].get("chunk_id") for r in filtered if r["payload"].get("chunk_id")]
     entity_ids = _extract_entity_ids_from_chunks(chunk_ids)
     summaries_data = _fetch_community_summaries(entity_ids)
+    return _build_result(summaries_data[:max_summaries])
 
-    max_summaries = settings.agent_max_community_summaries
-    selected = summaries_data[:max_summaries]
 
+def _build_result(selected: List[dict]) -> CommunityToolResult:
     context = ""
     if selected:
-        context = "\n\nRiassunti delle community rilevanti:\n" + "\n\n".join(
-            f"Community {s['community_id']} ({s['entity_count']} entità, {s['relation_count']} relazioni):\n{s['summary']}"
-            for s in selected
+        context = "\n\nPrincipali argomenti trattati nel documento:\n" + "\n\n".join(
+            f"Argomento {i + 1} ({s['entity_count']} entità, {s['relation_count']} relazioni collegate):\n{s['summary']}"
+            for i, s in enumerate(selected)
         )
 
     return CommunityToolResult(
@@ -79,6 +91,37 @@ def _extract_entity_ids_from_chunks(chunk_ids: List[str]) -> Set[str]:
     except Exception as exc:
         logger.warning("[community_tool] Errore estrazione entità dai chunk: %s", exc)
         return set()
+
+
+def _fetch_root_community_summaries() -> List[dict]:
+    try:
+        with graph_store.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (cs:CommunitySummary {level: 'root'})
+                RETURN cs.id AS community_id,
+                       cs.summary AS summary,
+                       cs.entity_count AS entity_count,
+                       cs.relation_count AS relation_count,
+                       cs.updated_at AS updated_at
+                ORDER BY cs.entity_count DESC
+                """
+            )
+            summaries = [
+                {
+                    "community_id": record["community_id"],
+                    "summary": record["summary"],
+                    "entity_count": record["entity_count"],
+                    "relation_count": record["relation_count"],
+                    "updated_at": record["updated_at"],
+                }
+                for record in result
+            ]
+            logger.debug("[community_tool] Community summaries di livello root trovate: %s", len(summaries))
+            return summaries
+    except Exception as exc:
+        logger.warning("[community_tool] Errore recupero community summaries root: %s", exc)
+        return []
 
 
 def _fetch_community_summaries(entity_ids: Set[str]) -> List[dict]:

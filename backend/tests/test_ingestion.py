@@ -61,3 +61,20 @@ def test_build_chunk_embedding_input_prepends_context_and_section():
 
     without_section = _build_chunk_embedding_input(context, None, "Testo del chunk.")
     assert without_section == "Documento: manuale.pdf\nCategoria: Manualistica tecnica\n\nTesto del chunk."
+
+
+def test_build_chunk_embedding_input_includes_llm_context_when_present():
+    context = "Documento: manuale.pdf"
+
+    with_llm_context = _build_chunk_embedding_input(
+        context, "CONDIZIONI GENERALI", "Testo del chunk.", "Il chunk descrive le condizioni del contratto X."
+    )
+    assert with_llm_context == (
+        "Documento: manuale.pdf\n\n"
+        "Sezione: CONDIZIONI GENERALI\n\n"
+        "Il chunk descrive le condizioni del contratto X.\n\n"
+        "Testo del chunk."
+    )
+
+    with_empty_llm_context = _build_chunk_embedding_input(context, None, "Testo del chunk.", "")
+    assert with_empty_llm_context == "Documento: manuale.pdf\n\nTesto del chunk."

@@ -68,3 +68,9 @@ class AgentState(TypedDict, total=False):
     citations: List[Citation]
     answer: Optional[str]
     error: Optional[str]
+
+    # Loop di auto-correzione (critic): conta i giri di retrieval già fatti, l'ultimo verdetto
+    # e l'eventuale query riformulata da usare nel prossimo giro (vedi agent/nodes.py::critic_node).
+    iteration: int
+    critic_verdict: Literal["sufficient", "insufficient"]
+    critic_reasoning: str

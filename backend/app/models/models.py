@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from sqlalchemy import Column, String, DateTime, Text, Integer, ForeignKey, Boolean, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from app.core.database import Base
 
 
@@ -40,6 +40,11 @@ class Document(Base):
     ocr_used = Column(Boolean, default=False)
     status = Column(String(64), default="uploaded")  # uploaded, parsing, chunking, embedding, vector_indexing, graph_indexing, completed, error
     error_message = Column(Text, nullable=True)
+    # Contributo di questo documento alle statistiche BM25 globali (term -> n. chunk che lo contengono)
+    # e numero totale di token (tokenizzazione sparsa) sommato sui suoi chunk. Permettono di sottrarre
+    # in modo pulito le statistiche su delete/reindex (vedi sparse_corpus_stats.py).
+    sparse_term_counts = Column(JSONB, nullable=True)
+    sparse_total_tokens = Column(Integer, nullable=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -81,6 +86,19 @@ class QueryLog(Base):
     error = Column(Text, nullable=True)
     latency_ms = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class SparseTerm(Base):
+    """Vocabolario stabile term -> id intero per i vettori sparsi BM25 (vedi sparse_corpus_stats.py).
+
+    Gli id assegnati non vengono mai riassegnati: i vettori sparsi già scritti su Qdrant
+    referenziano questi id come indici, quindi devono restare validi per sempre.
+    """
+
+    __tablename__ = "sparse_terms"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    term = Column(String(128), unique=True, nullable=False, index=True)
 
 
 class IngestionJob(Base):

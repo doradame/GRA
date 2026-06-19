@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -7,6 +8,7 @@ from openai import AsyncOpenAI
 
 from app.core.config import get_settings
 from app.services.agent.state import CypherToolResult
+from app.services.agent.tools.vector_tool import vector_tool
 from app.services.graph_store import graph_store
 
 settings = get_settings()
@@ -144,9 +146,20 @@ async def cypher_tool(query: str) -> CypherToolResult:
 
 
 async def run_cypher_tool(state) -> dict:
-    result = await cypher_tool(query=state.get("user_query", ""))
+    """Esegue il path "relational" eseguendo SEMPRE anche una ricerca vettoriale in parallelo.
+
+    Una query Cypher generata dall'LLM può "riuscire" (nessun errore, un risultato) pur essendo
+    semanticamente sbagliata (es. cercare il termine della domanda come nome di entità). Avere
+    sempre il grounding vettoriale come rete di sicurezza evita che il sintetizzatore costruisca
+    una risposta solo su un fatto spurio dal grafo. _build_context_from_state/_collect_citations
+    (in nodes.py) combinano già vector_results + cypher_results se entrambi sono presenti.
+    """
+    query = state.get("user_query", "")
+    cypher_result, vector_result = await asyncio.gather(
+        cypher_tool(query=query),
+        vector_tool(query=query, user_id=state.get("user_id")),
+    )
     return {
-        "cypher_results": result,
-        "context": result.summary,
-        "citations": [],
+        "cypher_results": cypher_result,
+        "vector_results": vector_result,
     }

@@ -3,7 +3,7 @@ import logging
 from dataclasses import dataclass
 from typing import List
 import magic
-from pypdf import PdfReader
+import pdfplumber
 from docx import Document as DocxDocument
 from bs4 import BeautifulSoup
 
@@ -53,7 +53,7 @@ def extract_document(
                     page_count=page_count,
                     ocr_used=True,
                 )
-        return ParsingResult(text=text, mime_type=mime, parser="pypdf", page_count=page_count, pages=pages)
+        return ParsingResult(text=text, mime_type=mime, parser="pdfplumber", page_count=page_count, pages=pages)
     if mime in (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/msword",
@@ -69,20 +69,66 @@ def extract_document(
     return ParsingResult(text=data.decode("utf-8", errors="ignore"), mime_type=mime, parser="text_fallback")
 
 
+def _render_markdown_table(rows: List[List[str | None]]) -> str:
+    cleaned: List[List[str]] = []
+    for row in rows:
+        cleaned_row = [(cell or "").strip().replace("|", "\\|").replace("\n", " ") for cell in row]
+        if any(cleaned_row):
+            cleaned.append(cleaned_row)
+    if not cleaned:
+        return ""
+    width = max(len(row) for row in cleaned)
+    cleaned = [row + [""] * (width - len(row)) for row in cleaned]
+    header, *body = cleaned
+    lines = ["| " + " | ".join(header) + " |", "| " + " | ".join(["---"] * width) + " |"]
+    lines.extend("| " + " | ".join(row) + " |" for row in body)
+    return "\n".join(lines)
+
+
+_TABLE_SETTINGS = {"vertical_strategy": "lines_strict", "horizontal_strategy": "lines_strict"}
+
+
+def _extract_pdf_page(page) -> str:
+    # Le tabelle vengono estratte come Markdown ed escluse dal testo libero per evitare
+    # di duplicarne il contenuto in forma illeggibile (celle appiattite su una riga).
+    # Si richiedono linee di confine reali (lines_strict): le strategie di default di
+    # pdfplumber ("lines"/"text") inferiscono colonne dalla posizione del testo e producono
+    # falsi positivi sistematici su documenti di testo denso senza una vera griglia tabellare
+    # (verificato su un dossier parlamentare reale: rilevava "tabelle" da paragrafi di prosa).
+    tables = page.find_tables(table_settings=_TABLE_SETTINGS)
+    text_page = page
+    for table in tables:
+        text_page = text_page.outside_bbox(table.bbox)
+    parts = []
+    prose = (text_page.extract_text() or "").strip()
+    if prose:
+        parts.append(prose)
+    for index, table in enumerate(tables, start=1):
+        rendered = _render_markdown_table(table.extract())
+        if rendered:
+            parts.append(f"Tabella {index}:\n\n{rendered}")
+    if page.images:
+        # Niente modello vision: segnaliamo solo la presenza di contenuto non testuale.
+        plural = "i" if len(page.images) > 1 else ""
+        parts.append(f"[Pagina con {len(page.images)} immagine{plural}/figura{plural} non elaborata{plural}]")
+    return "\n\n".join(parts)
+
+
 def _extract_pdf(data: bytes) -> tuple[str, int, List[PageText]]:
-    reader = PdfReader(io.BytesIO(data))
     parts: List[str] = []
     pages: List[PageText] = []
     cursor = 0
-    for page_index, page in enumerate(reader.pages, start=1):
-        text = page.extract_text()
-        if text:
-            start_char = cursor
-            parts.append(text)
-            cursor += len(text)
-            pages.append(PageText(page=page_index, text=text, start_char=start_char, end_char=cursor))
-            cursor += 2
-    return "\n\n".join(parts), len(reader.pages), pages
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        page_count = len(pdf.pages)
+        for page_index, page in enumerate(pdf.pages, start=1):
+            text = _extract_pdf_page(page)
+            if text:
+                start_char = cursor
+                parts.append(text)
+                cursor += len(text)
+                pages.append(PageText(page=page_index, text=text, start_char=start_char, end_char=cursor))
+                cursor += 2
+    return "\n\n".join(parts), page_count, pages
 
 
 def _extract_pdf_ocr(data: bytes) -> str:

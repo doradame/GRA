@@ -18,7 +18,14 @@ from app.services.vector_store import vector_store
 from app.services.graph_store import graph_store
 from app.services.extraction import extract_relations
 from app.services.gliner_extraction import extract_entities as gliner_extract_entities
-from app.services.sparse_vectors import build_sparse_vector, tokenize_sparse
+from app.services.sparse_vectors import tokenize_sparse, weighted_sparse_vector
+from app.services.sparse_corpus_stats import (
+    apply_document_delta,
+    get_global_stats_snapshot,
+    get_or_create_term_ids,
+    subtract_document_contribution,
+)
+from app.services.contextual_chunking import generate_chunk_contexts
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +102,17 @@ def _build_document_context(filename: str, category: str | None, description: st
     return "\n".join(parts)
 
 
-def _build_chunk_embedding_input(document_context: str, section_title: str | None, chunk_text_content: str) -> str:
+def _build_chunk_embedding_input(
+    document_context: str,
+    section_title: str | None,
+    chunk_text_content: str,
+    llm_context: str | None = None,
+) -> str:
     parts = [document_context]
     if section_title:
         parts.append(f"Sezione: {section_title}")
+    if llm_context:
+        parts.append(llm_context)
     parts.append(chunk_text_content)
     return "\n\n".join(parts)
 
@@ -193,8 +207,18 @@ async def _get_or_create_job(
 
 
 async def _cleanup_document_artifacts(db: AsyncSession, document_id: str) -> None:
-    """Remove derived data so retries can rebuild the document deterministically."""
+    """Remove derived data so retries can rebuild the document deterministically.
+
+    Sottrae anche il contributo BM25 della versione precedente di questo documento dalle
+    statistiche globali, prima di azzerarne i chunk: altrimenti un reindex farebbe drift
+    via via le statistiche verso l'alto (doppio conteggio). subtract_document_contribution
+    refetches il Document fresco invece di fidarsi dell'oggetto del chiamante, perché questa
+    funzione è chiamata anche dall'error handler subito dopo un rollback (che può invalidare
+    gli attributi già caricati).
+    """
     logger.info("[ingestion] Cleaning derived artifacts for document_id=%s", document_id)
+
+    await subtract_document_contribution(db, document_id)
     await db.execute(delete(Chunk).where(Chunk.document_id == document_id))
     await db.commit()
     try:
@@ -344,19 +368,39 @@ async def process_document(
                 if not chunks:
                     raise ValueError("Document text did not produce any chunks")
 
-                # Contextual retrieval: antepone titolo/categoria/descrizione (e sezione, se rilevata)
+                # Contextual retrieval: antepone titolo/categoria/descrizione, sezione (se rilevata) e,
+                # se abilitato, un contesto situazionale generato da LLM (vedi contextual_chunking.py)
                 # al testo di ogni chunk solo per l'embedding e il vettore sparso. Il testo salvato per
-                # citazioni e contesto LLM (chunk_text_content) resta quello originale.
+                # citazioni e contesto LLM di risposta (chunk_text_content) resta quello originale.
                 document_context = _build_document_context(filename, doc.category, doc.description)
                 section_titles = [_infer_section_title(chunk) for chunk in chunks]
+
+                llm_contexts: list[str] = ["" for _ in chunks]
+                if settings.enable_rich_contextual_retrieval:
+                    logger.info(
+                        "[ingestion] Generazione contesto LLM per %s chunk di document_id=%s", len(chunks), document_id
+                    )
+                    llm_contexts = await generate_chunk_contexts(text, chunks)
+
                 embedding_inputs = [
-                    _build_chunk_embedding_input(document_context, section_title, chunk)
-                    for chunk, section_title in zip(chunks, section_titles)
+                    _build_chunk_embedding_input(document_context, section_title, chunk, llm_context)
+                    for chunk, section_title, llm_context in zip(chunks, section_titles, llm_contexts)
                 ]
 
-                # Build token corpus for BM25 sparse vector IDF computation (sugli input contestualizzati).
-                corpus_tokens = [tokenize_sparse(chunk) for chunk in embedding_inputs]
-                logger.debug("[ingestion] Built sparse corpus with %s tokenized chunks", len(corpus_tokens))
+                # BM25 globale: registra i termini di questo documento nel vocabolario condiviso
+                # (Postgres + cache Redis) e fotografa le statistiche del corpus *esistente* (df/N
+                # di tutti gli altri documenti già indicizzati) prima di aggiungere questo documento.
+                # Vedi sparse_corpus_stats.py: l'IDF/lunghezza media sono calcolate sull'intero KB,
+                # non solo sui chunk di questo documento.
+                per_chunk_tokens = [tokenize_sparse(chunk) for chunk in embedding_inputs]
+                all_terms = {term for tokens in per_chunk_tokens for term in tokens}
+                term_id_map = await get_or_create_term_ids(db, all_terms)
+                global_df, total_chunks_before, avg_doc_len = get_global_stats_snapshot(term_id_map.values())
+                logger.debug(
+                    "[ingestion] Vocabolario BM25: %s termini in questo documento, corpus esistente: %s chunk",
+                    len(term_id_map),
+                    total_chunks_before,
+                )
 
                 # Embed chunks
                 await _set_document_status(db, doc, STATUS_EMBEDDING, job=job)
@@ -369,8 +413,8 @@ async def process_document(
                 qdrant_points = []
                 chunk_records = []
                 span_cursor = 0
-                for idx, (chunk_text_content, embedding, section_title, embedding_input) in enumerate(
-                    zip(chunks, embeddings, section_titles, embedding_inputs)
+                for idx, (chunk_text_content, embedding, section_title, embedding_input, chunk_tokens) in enumerate(
+                    zip(chunks, embeddings, section_titles, embedding_inputs, per_chunk_tokens)
                 ):
                     text_hash = _hash_text(chunk_text_content)
                     token_count = _token_count(chunk_text_content, settings.embedding_model)
@@ -402,7 +446,7 @@ async def process_document(
                             id=qdrant_id,
                             vector=vector_store.build_point_vector(
                                 embedding,
-                                build_sparse_vector(embedding_input, corpus_tokens),
+                                weighted_sparse_vector(chunk_tokens, term_id_map, global_df, total_chunks_before, avg_doc_len),
                             ),
                             payload={
                                 "chunk_id": chunk_id,
@@ -436,6 +480,26 @@ async def process_document(
                     logger.info("[ingestion] Upserting %s vectors to Qdrant for document_id=%s", len(qdrant_points), document_id)
                     vector_store.upsert(qdrant_points)
                     logger.info("[ingestion] Vectors upserted for document_id=%s", document_id)
+
+                # Pubblica il contributo BM25 di questo documento alle statistiche globali (df/N
+                # condivise da tutti i documenti, usate anche a query-time per l'IDF). La vecchia
+                # versione era già stata sottratta in _cleanup_document_artifacts in caso di reindex.
+                doc_term_counts: dict[str, int] = {}
+                for tokens in per_chunk_tokens:
+                    for term in set(tokens):
+                        doc_term_counts[term] = doc_term_counts.get(term, 0) + 1
+                doc_total_tokens = sum(len(tokens) for tokens in per_chunk_tokens)
+                doc.sparse_term_counts = doc_term_counts
+                doc.sparse_total_tokens = doc_total_tokens
+                await db.commit()
+                positive_counts = {term_id_map[term]: count for term, count in doc_term_counts.items()}
+                apply_document_delta(positive_counts, len(chunks), doc_total_tokens)
+                logger.info(
+                    "[ingestion] Statistiche BM25 globali aggiornate per document_id=%s (%s termini unici, %s chunk)",
+                    document_id,
+                    len(doc_term_counts),
+                    len(chunks),
+                )
 
                 await _set_document_status(db, doc, STATUS_GRAPH_INDEXING, job=job)
                 logger.info("[ingestion] Adding document node to graph: document_id=%s", document_id)

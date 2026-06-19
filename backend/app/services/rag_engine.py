@@ -8,7 +8,7 @@ from app.core.config import get_settings
 from app.services.embeddings import embed_text
 from app.services.vector_store import vector_store
 from app.services.graph_store import graph_store
-from app.services.sparse_vectors import build_sparse_vector
+from app.services.sparse_vectors import build_query_sparse_vector
 from app.models.schemas import Citation
 from app.services.agent.graph import agent_graph
 from app.services.agent.state import AgentState
@@ -50,7 +50,7 @@ async def build_context(
     if settings.qdrant_enable_native_sparse:
         results = vector_store.search_hybrid(
             query_vector,
-            build_sparse_vector(query),
+            build_query_sparse_vector(query),
             top_k=search_k,
             filter=query_filter,
         )
@@ -61,10 +61,14 @@ async def build_context(
             filter=query_filter,
         )
 
-    # Keep only results with a meaningful similarity score
-    candidates = [r for r in results if r["score"] >= threshold]
-    reranked = rerank_cross_encoder(query, candidates)
+    # Il cross-encoder valuta l'intero pool oversampled: lo score di fusione RRF è solo un
+    # rank tra le due liste dense/sparse, non una misura di rilevanza assoluta, quindi
+    # filtrarlo PRIMA del rerank scarta candidati potenzialmente ottimi (visto in produzione:
+    # il chunk con la definizione esatta scartato a score=0.08 < soglia 0.25). La soglia resta
+    # solo per il fallback lessicale, dove serve da pavimento minimo di rilevanza.
+    reranked = rerank_cross_encoder(query, results)
     if reranked is None:
+        candidates = [r for r in results if r["score"] >= threshold]
         reranked = rerank_hybrid(query, candidates)
     filtered = diversify_results(reranked)[:top_k]
 

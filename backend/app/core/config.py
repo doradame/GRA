@@ -37,6 +37,10 @@ class Settings(BaseSettings):
         "Normativa e Legale,Contrattualistica,Manualistica tecnica,"
         "Reportistica e Analisi,Risorse umane,Corrispondenza,Altro"
     )
+    enable_rich_contextual_retrieval: bool = True
+    contextual_retrieval_model: str = "gpt-4o-mini"
+    contextual_retrieval_max_doc_chars: int = 12000
+    contextual_retrieval_concurrency: int = 5
     secret_key: str = "supersecretchangeme"
     access_token_expire_minutes: int = 60
     frontend_admin_url: str = "http://localhost:5173"

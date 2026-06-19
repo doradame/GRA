@@ -16,8 +16,8 @@ Intent = Literal["factual", "relational", "summary", "direct"]
 
 ROUTER_PROMPT = """Sei un router semantico per un assistente Graph RAG. Classifica l'intento dell'ultima domanda utente in una di queste categorie:
 
-- factual: domanda il cui contenuto è probabilmente in uno o più chunk di documento (es. "Cosa dice il documento X riguardo Y?", "Quali requisiti sono previsti?").
-- relational: domande su connessioni, dipendenze, relazioni tra entità (es. "Quali sistemi dipendono dal Firewall X?", "Chi è collegato a Y?").
+- factual: domanda il cui contenuto è probabilmente in uno o più chunk di documento (es. "Cosa dice il documento X riguardo Y?", "Quali requisiti sono previsti?"). Include anche domande su un singolo attributo di una singola entità (es. "Chi è il responsabile di X?", "Chi ha scritto Y?", "Quando è stato pubblicato Z?") quando la risposta è probabilmente contenuta in un singolo passaggio di testo, non richiede di attraversare relazioni tra più entità diverse.
+- relational: domande sulle connessioni/dipendenze TRA PIÙ entità distinte (es. "Quali sistemi dipendono dal Firewall X?", "Chi è collegato a Y?", "Quali prodotti sono esclusi da Z?").
 - summary: domande di sintesi o panoramica (es. "Quali sono le tematiche principali?", "Riassumi gli argomenti trattati").
 - direct: saluti, domande sull'assistente, domande generiche senza riferimento ai documenti (es. "ciao", "chi sei?", "come funzioni?").
 
@@ -33,6 +33,9 @@ Utente: "Quali requisiti sono previsti per l'accesso ai dati?"
 
 Utente: "Quali sistemi dipendono dal Firewall DMZ?"
 {"intent": "relational", "reasoning": "domanda su relazioni tra entità"}
+
+Utente: "Chi è il responsabile tecnico del progetto Aurora-7?"
+{"intent": "factual", "reasoning": "attributo di una singola entità, risposta probabile in un singolo passaggio"}
 
 Utente: "Quali sono le tematiche principali del documento?"
 {"intent": "summary", "reasoning": "domanda di sintesi"}

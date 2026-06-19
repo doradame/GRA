@@ -6,7 +6,7 @@ from app.services.agent.state import VectorToolResult, Citation
 from app.services.embeddings import embed_text
 from app.services.vector_store import vector_store
 from app.services.graph_store import graph_store
-from app.services.sparse_vectors import build_sparse_vector
+from app.services.sparse_vectors import build_query_sparse_vector
 from app.services.reranker import rerank_cross_encoder
 from app.services.retrieval_utils import (
     format_reference,
@@ -33,7 +33,7 @@ async def vector_tool(
     if settings.qdrant_enable_native_sparse:
         results = vector_store.search_hybrid(
             query_vector,
-            build_sparse_vector(query),
+            build_query_sparse_vector(query),
             top_k=search_k,
             filter=query_filter,
         )
@@ -44,9 +44,11 @@ async def vector_tool(
             filter=query_filter,
         )
 
-    candidates = [r for r in results if r["score"] >= threshold]
-    reranked = rerank_cross_encoder(query, candidates)
+    # Vedi rag_engine.build_context: il cross-encoder valuta tutto il pool oversampled,
+    # la soglia su score di fusione RRF si applica solo al fallback lessicale.
+    reranked = rerank_cross_encoder(query, results)
     if reranked is None:
+        candidates = [r for r in results if r["score"] >= threshold]
         reranked = rerank_hybrid(query, candidates)
     filtered = diversify_results(reranked)[:top_k]
 

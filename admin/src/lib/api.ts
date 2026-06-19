@@ -139,8 +139,10 @@ export async function fetchKnowledgeBaseInfo() {
 export interface APIUsage {
   embeddings_calls: number
   extraction_calls: number
+  contextual_retrieval_calls: number
   embeddings_tokens: number
   extraction_tokens: number
+  contextual_retrieval_tokens: number
 }
 
 export async function fetchApiUsage() {

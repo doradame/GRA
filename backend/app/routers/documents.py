@@ -1,12 +1,12 @@
 import logging
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, func
+from sqlalchemy import select, desc, delete, func
 
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.auth import get_current_user, get_current_active_admin
-from app.models.models import User, Document, Chunk, IngestionJob
+from app.models.models import User, Document, Chunk, IngestionJob, SparseTerm
 from app.models.schemas import DocumentCategoryList, DocumentOut, DocumentList, IngestionJobList
 from app.services.ingestion import SCHEDULABLE_STATUSES, create_document
 from app.tasks.ingestion import ingest_document_task
@@ -14,6 +14,7 @@ from app.services.storage import storage
 from app.services.vector_store import vector_store
 from app.services.graph_store import graph_store
 from app.services.api_usage import reset_api_usage
+from app.services.sparse_corpus_stats import reset_global_stats, subtract_document_contribution
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -236,6 +237,8 @@ async def delete_document(
         raise HTTPException(status_code=404, detail="Document not found")
 
     # Delete from graph, vector store, object storage and database
+    logger.info("[documents] Subtracting BM25 contribution for document_id=%s", document_id)
+    await subtract_document_contribution(db, document_id)
     logger.info("[documents] Removing graph data for document_id=%s", document_id)
     graph_store.delete_document(document_id)
     logger.info("[documents] Removing vectors for document_id=%s", document_id)
@@ -270,6 +273,11 @@ async def reset_knowledge_base(
     # Reset API usage counters
     logger.info("[documents] Resetting API usage counters")
     reset_api_usage()
+
+    # Reset BM25 global stats (vocabolario/document-frequency condivisi)
+    logger.info("[documents] Resetting BM25 global stats")
+    reset_global_stats()
+    await db.execute(delete(SparseTerm))
 
     # Delete all documents from object storage and database
     result = await db.execute(select(Document))

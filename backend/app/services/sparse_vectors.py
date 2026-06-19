@@ -1,10 +1,10 @@
-import hashlib
 import logging
 import math
 from collections import Counter
-from typing import Iterable
 
 from qdrant_client.models import SparseVector
+
+from app.services.sparse_corpus_stats import get_global_stats_snapshot, get_term_ids_cached
 
 logger = logging.getLogger(__name__)
 
@@ -12,8 +12,6 @@ logger = logging.getLogger(__name__)
 # b controlla la normalizzazione per lunghezza del documento.
 BM25_K1 = 1.5
 BM25_B = 0.75
-# Numero di bucket per l'hashing dei token. Deve essere coerente tra indexing e query.
-BUCKETS = 1_000_003
 
 # Cache lazy per i dati NLTK.
 _NLTK_READY = False
@@ -85,76 +83,41 @@ def _tokenize(text: str) -> list[str]:
     return filtered
 
 
-def _hash_token(token: str, buckets: int = BUCKETS) -> int:
-    digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
-    return int.from_bytes(digest, "big") % buckets
-
-
-def _compute_bm25_weights(
+def weighted_sparse_vector(
     tokens: list[str],
-    corpus_tokens: list[list[str]],
+    term_id_map: dict[str, int],
+    global_df: dict[int, int],
+    total_chunks: int,
+    avg_doc_len: float,
     k1: float = BM25_K1,
     b: float = BM25_B,
-) -> dict[str, float]:
-    """Calcola i pesi BM25 per i token di un documento rispetto a un corpus.
+) -> SparseVector:
+    """Calcola i pesi BM25 di un testo già tokenizzato usando id di vocabolario stabili
+    (niente hashing/collisioni) e IDF calcolata sull'intero corpus indicizzato finora, non
+    solo sul singolo documento.
 
-    Se il corpus è vuoto o monodocumentale, il componente IDF viene neutralizzato
-    a 1.0 in modo da non penalizzare termini comuni.
+    Termini non presenti in term_id_map (mai visti in indexing, possibile solo a query-time)
+    vengono ignorati: non possono comunque corrispondere a nessun chunk indicizzato.
     """
     if not tokens:
-        return {}
+        return SparseVector(indices=[], values=[])
 
-    N = len(corpus_tokens)
-    avgdl = sum(len(doc) for doc in corpus_tokens) / max(N, 1)
     doc_len = len(tokens)
     tf = Counter(tokens)
 
-    # Pre-calcola document frequency per ogni termine del documento corrente.
-    dfs = {
-        term: sum(1 for doc in corpus_tokens if term in doc)
-        for term in tf.keys()
-    }
-
-    weights: dict[str, float] = {}
-    for term, freq in tf.items():
-        df = dfs.get(term, 0)
-        if N > 1 and df > 0:
-            idf = math.log((N - df + 0.5) / (df + 0.5) + 1.0)
-        else:
-            idf = 1.0
-        denom = freq + k1 * (1.0 - b + b * (doc_len / max(avgdl, 1.0)))
-        weights[term] = idf * (freq * (k1 + 1.0)) / denom
-    return weights
-
-
-def build_sparse_vector(
-    text: str,
-    corpus_tokens: list[list[str]] | None = None,
-    buckets: int = BUCKETS,
-) -> SparseVector:
-    """Costruisce un vettore sparso BM25-like per Qdrant.
-
-    Args:
-        text: il testo da vettorializzare (chunk durante l'indexing, query durante il retrieval).
-        corpus_tokens: lista di documenti tokenizzati che costituiscono il corpus per l'IDF.
-            Durante l'ingestion questo sarà la lista di tutti i chunk del documento;
-            durante il retrieval può essere None (viene usato solo TF pesato).
-    """
-    tokens = _tokenize(text)
-    if not tokens:
-        return SparseVector(indices=[], values=[])
-
-    weights = _compute_bm25_weights(tokens, corpus_tokens or [tokens])
-    if not weights:
-        return SparseVector(indices=[], values=[])
-
-    # Applichiamo hashing ai token per ottenere indici sparsi compatibili con Qdrant.
     weighted: dict[int, float] = {}
-    for term, weight in weights.items():
-        index = _hash_token(term, buckets)
-        weighted[index] = weighted.get(index, 0.0) + weight
+    for term, freq in tf.items():
+        term_id = term_id_map.get(term)
+        if term_id is None:
+            continue
+        df = global_df.get(term_id, 0)
+        idf = math.log((total_chunks - df + 0.5) / (df + 0.5) + 1.0) if total_chunks > 0 else math.log(2.0)
+        denom = freq + k1 * (1.0 - b + b * (doc_len / max(avg_doc_len, 1.0)))
+        weight = idf * (freq * (k1 + 1.0)) / denom
+        if weight > 0:
+            weighted[term_id] = weighted.get(term_id, 0.0) + weight
 
-    # Normalizzazione L2 per rendere il vettore comparable con quello denso.
+    # Normalizzazione L2 per rendere il vettore comparabile con quello denso.
     norm = math.sqrt(sum(value * value for value in weighted.values()))
     if norm > 0:
         weighted = {index: value / norm for index, value in weighted.items()}
@@ -164,6 +127,19 @@ def build_sparse_vector(
         indices=[index for index, _ in items],
         values=[value for _, value in items],
     )
+
+
+def build_query_sparse_vector(text: str) -> SparseVector:
+    """Costruisce il vettore sparso di una query a retrieval-time.
+
+    Nessuna scrittura: legge solo la cache Redis del vocabolario e le statistiche globali
+    correnti (niente sessione DB necessaria in questo percorso, sincrono). I termini della
+    query mai visti in indexing vengono ignorati (get_term_ids_cached li omette).
+    """
+    tokens = _tokenize(text)
+    term_ids = get_term_ids_cached(tokens)
+    df, total_chunks, avg_doc_len = get_global_stats_snapshot(term_ids.values())
+    return weighted_sparse_vector(tokens, term_ids, df, total_chunks, avg_doc_len)
 
 
 def tokenize_sparse(text: str) -> list[str]:
