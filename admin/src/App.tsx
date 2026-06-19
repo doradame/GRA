@@ -4,8 +4,7 @@ import Sidebar from './components/Sidebar'
 import Documents from './components/Documents'
 import GraphExplorer from './components/GraphExplorer'
 import Upload from './components/Upload'
-import KnowledgeBaseInfo from './components/KnowledgeBaseInfo'
-import ApiUsage from './components/ApiUsage'
+import Dashboard from './components/Dashboard'
 import ResetKB from './components/ResetKB'
 import QueryLogs from './components/QueryLogs'
 
@@ -47,10 +46,11 @@ function App() {
         </header>
         <main className="flex-1 w-full max-w-6xl mx-auto p-6 md:p-8 space-y-6">
           {page === 'dashboard' && (
-            <>
-              <KnowledgeBaseInfo key={refreshCounter} onTokenInvalid={handleTokenInvalid} />
-              <ApiUsage onTokenInvalid={handleTokenInvalid} />
-            </>
+            <Dashboard
+              key={refreshCounter}
+              refreshCounter={refreshCounter}
+              onTokenInvalid={handleTokenInvalid}
+            />
           )}
 
           {page === 'documents' && (

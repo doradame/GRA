@@ -46,6 +46,24 @@ export interface IngestionJob {
   completed_at: string | null
   created_at: string
   updated_at: string
+
+  started_parsing_at: string | null
+  completed_parsing_at: string | null
+  started_chunking_at: string | null
+  completed_chunking_at: string | null
+  started_embedding_at: string | null
+  completed_embedding_at: string | null
+  started_vector_indexing_at: string | null
+  completed_vector_indexing_at: string | null
+  started_graph_indexing_at: string | null
+  completed_graph_indexing_at: string | null
+
+  chunk_count: number | null
+  entity_count: number | null
+  relation_count: number | null
+  input_tokens: number | null
+  output_tokens: number | null
+  cost_estimate_usd: number | null
 }
 
 export interface GraphEntity {
@@ -163,6 +181,12 @@ export interface QueryLog {
   error: string | null
   latency_ms: number | null
   created_at: string
+
+  tool_used: string | null
+  iteration_count: number | null
+  input_tokens: number | null
+  output_tokens: number | null
+  cost_estimate_usd: number | null
 }
 
 export interface QueryLogFilters {
@@ -177,4 +201,36 @@ export interface QueryLogFilters {
 export async function fetchQueryLogs(filters: QueryLogFilters = {}) {
   const res = await api.get('/logs/queries', { params: filters })
   return res.data as { items: QueryLog[]; total: number }
+}
+
+export interface ServiceHealth {
+  id: string
+  service: string
+  status: 'ok' | 'degraded' | 'error'
+  latency_ms: number | null
+  last_check_at: string
+  error_message: string | null
+}
+
+export interface AdminMetrics {
+  documents: Record<string, number>
+  recent_ingestions: IngestionJob[]
+  recent_queries: QueryLog[]
+  services: ServiceHealth[]
+  api_usage: APIUsage
+}
+
+export async function fetchAdminMetrics() {
+  const res = await api.get('/admin/metrics')
+  return res.data as AdminMetrics
+}
+
+export async function fetchAdminHealth() {
+  const res = await api.get('/admin/health')
+  return res.data as ServiceHealth[]
+}
+
+export async function forceHealthCheck() {
+  const res = await api.post('/admin/health/check')
+  return res.data as ServiceHealth[]
 }
