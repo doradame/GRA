@@ -7,6 +7,7 @@
 * ✅ Fase 2 completata — estrazione entità con GLiNER su tutti i chunk, relazioni solo via LLM.
 * ✅ Fase 3 completata — orchestrazione agentica con LangGraph, Local/Global Graph Search.
 * ✅ Fase 4 completata — BM25 globale, community detection gerarchica, loop critic/auto-correzione, parsing layout-aware, fix soglia pre-rerank.
+* ✅ Fase 5 completata — modelli LLM aggiornati a GPT-5.4, differenziati per funzione; fix bug troncamento input del critic.
 
 ---
 
@@ -174,5 +175,29 @@ Obiettivo: portare la qualità del retrieval e del ragionamento agentico oltre i
 * `backend/app/services/rag_engine.py`, `backend/app/services/agent/tools/vector_tool.py` — fix soglia pre-rerank.
 * `backend/Dockerfile`, `docker-compose.yml` — supporto Alembic nel container.
 * `backend/tests/test_sparse_vectors.py`, `test_sparse_corpus_stats.py`, `test_community_detection.py`, `test_community_tool.py`, `test_agent_nodes.py`, `test_agent_graph.py`.
+
+---
+
+## Fase 5: Modelli GPT-5.4 differenziati per funzione e fix critic ✅ COMPLETATA
+
+### 5.1. Modelli LLM a 3 livelli, scorporati da un'unica impostazione condivisa
+* **Stato:** Completato in `backend/app/core/config.py`.
+* **Problema risolto:** un solo `openai_model` (gpt-4o-mini) guidava router, synthesizer, critic e generazione Cypher.
+* **Implementazione:** 3 livelli in base a volume di chiamate e bisogno di ragionamento:
+    * `openai_model` (sintesi finale + critic, 1-3 chiamate/domanda) → **gpt-5.4**.
+    * `router_model` / `cypher_model` (nuove impostazioni; classificazione/generazione strutturata, 1 chiamata/domanda) → **gpt-5.4-mini**.
+    * `contextual_retrieval_model` / `community_summary_model` (alto volume in ingestion/community detection) → **gpt-5.4-nano**.
+* **Attenzione in deploy:** il file `.env` del progetto aveva `OPENAI_MODEL` impostato esplicitamente, che sovrascrive sia il default Python sia quello in `docker-compose.yml` — controllare sempre tutti e tre i livelli quando un nuovo default non sembra avere effetto.
+
+### 5.2. Fix bug troncamento input del critic
+* **Stato:** Completato in `backend/app/services/agent/nodes.py::critic_node`.
+* **Problema:** il critic giudicava `context[:6000]`/`answer[:2000]` — limiti invisibili con gpt-4o-mini (risposte terse) ma che con gpt-5.4 (più verboso) e contesti più ricchi (16k+ caratteri dopo la Fase 4) tagliavano la bozza a metà frase, causando falsi verdetti "insufficiente" (risposta tronca / fonti non nel contesto) su ogni domanda — 3 iterazioni sempre esaurite invece di 1.
+* **Fix:** limiti alzati a 40000/12000 caratteri (argine solo per input patologici). Verificato dal vivo su query factual, relational e summary: tutte convergono ora in 1 iterazione genuina.
+
+### File coinvolti Fase 5
+* `backend/app/core/config.py` — `router_model`, `cypher_model`, nuovi default gpt-5.4/-mini/-nano.
+* `backend/app/services/agent/router.py`, `backend/app/services/agent/tools/cypher_tool.py` — uso dei nuovi model setting.
+* `backend/app/services/agent/nodes.py` — fix troncamento critic.
+* `docker-compose.yml`, `librechat/librechat.yaml` — mirror env var, etichetta modello cosmetica.
 
 ---
