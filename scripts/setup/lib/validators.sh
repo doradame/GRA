@@ -14,7 +14,7 @@ is_valid_email() {
 
 is_valid_openai_key() {
     local key="$1"
-    [[ "$key" =~ ^sk-[a-zA-Z0-9]{32,}$ ]]
+    [[ "$key" =~ ^sk-[a-zA-Z0-9_-]{20,}$ ]]
 }
 
 is_valid_resend_key() {
