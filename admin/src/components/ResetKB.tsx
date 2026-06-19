@@ -32,7 +32,7 @@ export default function ResetKB({ onReset, onTokenInvalid }: Props) {
   }
 
   return (
-    <div className="bg-white p-6 rounded shadow border-l-4 border-red-500">
+    <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 border-l-4 border-l-red-500">
       <h2 className="text-lg font-semibold mb-2 text-red-700">Zona pericolosa</h2>
       <p className="text-sm text-gray-600 mb-4">
         Cancella tutti i documenti, chunk, vettori, entità e relazioni. Irreversibile.

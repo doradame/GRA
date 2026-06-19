@@ -131,37 +131,16 @@ services:
     networks:
       - igr-network
 
-  flower:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: igr-flower
-    restart: unless-stopped
-    command: ["celery", "-A", "app.core.celery_app", "flower", "--port=5555", "--url_prefix=flower"]
-    environment:
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    expose:
-      - "5555"
-    depends_on:
-      - redis
-      - worker
-    networks:
-      - igr-network
-
   admin:
     build:
       context: ./admin
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: https://api.matamune.4nk.eu
     container_name: igr-admin
     restart: unless-stopped
     expose:
-      - "5173"
-    environment:
-      - VITE_API_URL=https://api.matamune.4nk.eu
-    volumes:
-      - ./admin:/app
-      - /app/node_modules
+      - "80"
     depends_on:
       - backend
     networks:

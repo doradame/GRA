@@ -158,31 +158,51 @@ class GraphStore:
             value = value[0] if value else ""
         return str(value) if value is not None else ""
 
-    def explore_entity(self, entity_name: str, depth: int = 1) -> Dict[str, Any]:
+    @classmethod
+    def _clean_name(cls, value: Any) -> str:
+        """Stringify and collapse whitespace/newlines left over from PDF text extraction."""
+        return " ".join(cls._stringify_name(value).split())
+
+    def explore_entity(self, entity_name: str, depth: int = 1, limit: int = 25) -> Dict[str, Any]:
         logger.debug("[graph] Exploring entity: %s (depth=%s)", entity_name, depth)
+        # Match entities by name first (independent of whether they have any relation), then
+        # separately expand to other Entity nodes within `depth` hops. This keeps results for
+        # entities that only have MENTIONS edges to text chunks (no LLM-extracted relations),
+        # and avoids surfacing raw chunk/document nodes as fake "entities" in the response.
         query = f"""
-        MATCH path = (e:Entity)-[*1..{depth}]-(connected)
+        MATCH (e:Entity)
         WHERE toLower(CASE WHEN apoc.meta.cypher.type(e.name) STARTS WITH 'LIST' THEN e.name[0] ELSE e.name END) CONTAINS toLower($entity_name)
+        WITH e
+        LIMIT $limit
+        OPTIONAL MATCH path = (e)-[*1..{depth}]-(connected:Entity)
+        WHERE connected <> e
         RETURN e, connected, relationships(path) AS rels
-        LIMIT 50
+        LIMIT 200
         """
         with self.driver.session() as session:
-            result = session.run(query, entity_name=entity_name)
+            result = session.run(query, entity_name=entity_name, limit=limit)
             entities = {}
             relations = []
+            seen_relations = set()
             for record in result:
                 e = record["e"]
+                entities[e.element_id] = {"id": e["id"], "name": self._clean_name(e["name"]), "type": e["type"]}
                 conn = record["connected"]
-                entities[e.element_id] = {"id": e["id"], "name": self._stringify_name(e["name"]), "type": e["type"]}
+                if conn is None:
+                    continue
                 entities[conn.element_id] = {
                     "id": conn.get("id"),
-                    "name": self._stringify_name(conn.get("name", conn.get("filename", ""))),
-                    "type": next(iter(conn.labels), "Unknown"),
+                    "name": self._clean_name(conn.get("name", "")),
+                    "type": conn.get("type", "Unknown"),
                 }
-                for rel in record["rels"]:
+                for rel in record["rels"] or []:
+                    rel_key = (rel.start_node.element_id, rel.end_node.element_id, rel.type)
+                    if rel_key in seen_relations:
+                        continue
+                    seen_relations.add(rel_key)
                     relations.append({
-                        "source": self._stringify_name(rel.start_node.get("name", rel.start_node.get("filename", ""))),
-                        "target": self._stringify_name(rel.end_node.get("name", rel.end_node.get("filename", ""))),
+                        "source": self._clean_name(rel.start_node.get("name", "")),
+                        "target": self._clean_name(rel.end_node.get("name", "")),
                         "type": rel.type,
                     })
             logger.debug("[graph] Explore returned %s entities and %s relations", len(entities), len(relations))

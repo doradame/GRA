@@ -64,6 +64,23 @@ class Chunk(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class QueryLog(Base):
+    __tablename__ = "query_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source = Column(String(32), nullable=False, default="api", index=True)  # librechat, mcp, admin, api
+    user_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    user_email = Column(String(255), nullable=True)
+    query = Column(Text, nullable=False)
+    intent = Column(String(32), nullable=True, index=True)  # factual, relational, summary, direct
+    reasoning = Column(Text, nullable=True)
+    answer = Column(Text, nullable=True)
+    citation_count = Column(Integer, default=0)
+    error = Column(Text, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class IngestionJob(Base):
     __tablename__ = "ingestion_jobs"
 

@@ -77,12 +77,12 @@ export default function Documents({ onTokenInvalid }: Props) {
     }
   }
 
-  if (loading) return <div className="text-center py-8">Caricamento...</div>
+  if (loading) return <div className="text-center py-8 text-slate-500">Caricamento...</div>
 
   return (
-    <div className="bg-white p-6 rounded shadow">
+    <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
       <div className="flex justify-between items-center mb-4">
-        <h2 className="text-lg font-semibold">Documenti caricati</h2>
+        <h2 className="text-lg font-semibold text-slate-800">Documenti caricati</h2>
         <button
           onClick={load}
           className="text-sm bg-slate-100 text-slate-700 px-3 py-1 rounded hover:bg-slate-200"

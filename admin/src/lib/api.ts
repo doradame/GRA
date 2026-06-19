@@ -138,3 +138,32 @@ export async function fetchApiUsage() {
   const res = await api.get('/kb/usage')
   return res.data as APIUsage
 }
+
+export interface QueryLog {
+  id: string
+  source: string
+  user_id: string | null
+  user_email: string | null
+  query: string
+  intent: string | null
+  reasoning: string | null
+  answer: string | null
+  citation_count: number
+  error: string | null
+  latency_ms: number | null
+  created_at: string
+}
+
+export interface QueryLogFilters {
+  source?: string
+  intent?: string
+  q?: string
+  errors_only?: boolean
+  skip?: number
+  limit?: number
+}
+
+export async function fetchQueryLogs(filters: QueryLogFilters = {}) {
+  const res = await api.get('/logs/queries', { params: filters })
+  return res.data as { items: QueryLog[]; total: number }
+}

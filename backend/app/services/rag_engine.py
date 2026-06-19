@@ -12,6 +12,7 @@ from app.services.sparse_vectors import build_sparse_vector
 from app.models.schemas import Citation
 from app.services.agent.graph import agent_graph
 from app.services.agent.state import AgentState
+from app.services.query_log import record_query_log
 from app.services.retrieval_utils import (
     format_reference,
     extract_quote,
@@ -118,6 +119,9 @@ async def chat_completion(
     messages: List[Dict[str, str]],
     stream: bool = False,
     user_id: str | None = None,
+    source: str = "api",
+    caller_id: str | None = None,
+    caller_email: str | None = None,
 ) -> Dict[str, Any]:
     if not messages:
         raise ValueError("messages cannot be empty")
@@ -139,10 +143,35 @@ async def chat_completion(
         "error": None,
     }
 
-    result = await agent_graph.ainvoke(initial_state)
+    start = time.monotonic()
+    try:
+        result = await agent_graph.ainvoke(initial_state)
+    except Exception as exc:
+        await record_query_log(
+            source=source,
+            user_id=caller_id,
+            user_email=caller_email,
+            query=user_query,
+            error=str(exc),
+            latency_ms=int((time.monotonic() - start) * 1000),
+        )
+        raise
 
     content = result.get("answer") or ""
     citations = result.get("citations", [])
+
+    await record_query_log(
+        source=source,
+        user_id=caller_id,
+        user_email=caller_email,
+        query=user_query,
+        intent=result.get("intent"),
+        reasoning=result.get("reasoning"),
+        answer=content,
+        citation_count=len(citations),
+        error=result.get("error"),
+        latency_ms=int((time.monotonic() - start) * 1000),
+    )
 
     if stream:
         if not settings.openai_api_key or settings.openai_api_key.startswith("sk-test"):

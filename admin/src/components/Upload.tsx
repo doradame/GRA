@@ -58,8 +58,8 @@ export default function Upload({ onUploadSuccess, onTokenInvalid }: Props) {
   }
 
   return (
-    <div className="bg-white p-6 rounded shadow">
-      <h2 className="text-lg font-semibold mb-4">Carica documento</h2>
+    <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+      <h2 className="text-lg font-semibold mb-4 text-slate-800">Carica documento</h2>
       <div
         onDrop={onDrop}
         onDragOver={onDragOver}

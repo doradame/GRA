@@ -1,5 +1,5 @@
 admin.matamune.4nk.eu {
-    reverse_proxy admin:5173
+    reverse_proxy admin:80
 }
 
 api.matamune.4nk.eu {
@@ -20,10 +20,6 @@ mcp.matamune.4nk.eu {
         reverse_proxy mcp:8000
     }
     respond 401
-}
-
-flower.matamune.4nk.eu {
-    reverse_proxy flower:5555
 }
 
 matamune.4nk.eu {

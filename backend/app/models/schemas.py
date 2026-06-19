@@ -157,3 +157,30 @@ class CommunitySummaryOut(BaseModel):
 class CommunitySummaryList(BaseModel):
     items: List[CommunitySummaryOut]
     total: int
+
+
+# Query logs
+class QueryLogOut(BaseModel):
+    id: str
+    source: str
+    user_id: Optional[str] = None
+    user_email: Optional[str] = None
+    query: str
+    intent: Optional[str] = None
+    reasoning: Optional[str] = None
+    answer: Optional[str] = None
+    citation_count: int = 0
+    error: Optional[str] = None
+    latency_ms: Optional[int] = None
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("id", "user_id", mode="before")
+    @classmethod
+    def _uuid_to_str(cls, v):
+        return str(v) if v is not None else None
+
+
+class QueryLogList(BaseModel):
+    items: List[QueryLogOut]
+    total: int

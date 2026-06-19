@@ -35,6 +35,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if not token:
+        raise credentials_exception
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
         user_id: str = payload.get("sub")
