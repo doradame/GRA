@@ -30,7 +30,7 @@ async def test_generate_chunk_contexts_calls_llm_per_chunk_and_tracks_usage(monk
     captured_prompts = []
     tracked_calls = []
 
-    async def fake_create(model, messages, temperature, max_tokens):
+    async def fake_create(model, messages, temperature, max_tokens=None, **kwargs):
         captured_prompts.append(messages[0]["content"])
         content = f"Contesto per: {messages[0]['content'][-20:]}"
         return SimpleNamespace(
@@ -71,7 +71,7 @@ async def test_generate_chunk_contexts_truncates_document_to_configured_limit(mo
     monkeypatch.setattr(contextual_chunking_module.settings, "contextual_retrieval_max_doc_chars", 10)
     captured_prompts = []
 
-    async def fake_create(model, messages, temperature, max_tokens):
+    async def fake_create(model, messages, temperature, max_tokens=None, **kwargs):
         captured_prompts.append(messages[0]["content"])
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
