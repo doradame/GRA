@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Text, Integer, ForeignKey, Boolean, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, Text, Integer, Float, ForeignKey, Boolean, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from app.core.database import Base
 
@@ -85,6 +85,11 @@ class QueryLog(Base):
     citation_count = Column(Integer, default=0)
     error = Column(Text, nullable=True)
     latency_ms = Column(Integer, nullable=True)
+    tool_used = Column(String(32), nullable=True)
+    iteration_count = Column(Integer, nullable=True)
+    input_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
+    cost_estimate_usd = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
@@ -115,5 +120,33 @@ class IngestionJob(Base):
     error_message = Column(Text, nullable=True)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    started_parsing_at = Column(DateTime, nullable=True)
+    completed_parsing_at = Column(DateTime, nullable=True)
+    started_chunking_at = Column(DateTime, nullable=True)
+    completed_chunking_at = Column(DateTime, nullable=True)
+    started_embedding_at = Column(DateTime, nullable=True)
+    completed_embedding_at = Column(DateTime, nullable=True)
+    started_vector_indexing_at = Column(DateTime, nullable=True)
+    completed_vector_indexing_at = Column(DateTime, nullable=True)
+    started_graph_indexing_at = Column(DateTime, nullable=True)
+    completed_graph_indexing_at = Column(DateTime, nullable=True)
+
+    chunk_count = Column(Integer, nullable=True)
+    entity_count = Column(Integer, nullable=True)
+    relation_count = Column(Integer, nullable=True)
+    input_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
+    cost_estimate_usd = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ServiceHealthCheck(Base):
+    __tablename__ = "service_health_checks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    service = Column(String(64), unique=True, nullable=False, index=True)
+    status = Column(String(32), nullable=False)
+    latency_ms = Column(Integer, nullable=True)
+    last_check_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    error_message = Column(Text, nullable=True)
