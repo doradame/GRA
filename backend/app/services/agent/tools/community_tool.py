@@ -173,4 +173,5 @@ async def run_community_tool(state) -> dict:
         "community_results": result,
         "context": result.context,
         "citations": [],
+        "tool_used": "community",
     }

@@ -144,4 +144,9 @@ async def run_vector_tool(state) -> dict:
         query=state.get("user_query", ""),
         user_id=state.get("user_id"),
     )
-    return {"vector_results": result, "context": result.context, "citations": result.citations}
+    return {
+        "vector_results": result,
+        "context": result.context,
+        "citations": result.citations,
+        "tool_used": "vector",
+    }

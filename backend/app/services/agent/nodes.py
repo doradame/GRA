@@ -61,7 +61,7 @@ async def direct_answer(state: AgentState) -> AgentState:
         temperature=settings.llm_temperature,
     )
     answer = response.choices[0].message.content or ""
-    return {**state, "answer": answer}
+    return {**state, "answer": answer, "tool_used": "direct"}
 
 
 async def synthesizer(state: AgentState) -> AgentState:

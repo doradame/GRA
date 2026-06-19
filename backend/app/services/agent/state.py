@@ -74,3 +74,6 @@ class AgentState(TypedDict, total=False):
     iteration: int
     critic_verdict: Literal["sufficient", "insufficient"]
     critic_reasoning: str
+
+    # Monitoring
+    tool_used: Optional[str] = None

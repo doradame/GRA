@@ -162,4 +162,5 @@ async def run_cypher_tool(state) -> dict:
     return {
         "cypher_results": cypher_result,
         "vector_results": vector_result,
+        "tool_used": "cypher",
     }
