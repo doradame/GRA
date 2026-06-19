@@ -6,7 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETUP_DIR="$SCRIPT_DIR/setup"
 
-export PROJECT_DIR=""
+PROJECT_DIR=""
 
 source "$SETUP_DIR/lib/colors.sh"
 source "$SETUP_DIR/lib/prompts.sh"
@@ -29,6 +29,8 @@ run_checks
 CURRENT_STEP="20"
 load_module "20-clone.sh"
 run_clone
+
+cd "${PROJECT_DIR:-$(pwd)}"
 
 CURRENT_STEP="30"
 load_module "30-input.sh"

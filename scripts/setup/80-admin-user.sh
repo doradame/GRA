@@ -7,10 +7,30 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/colors.sh"
 
 create_backend_admin() {
     local api_url="https://${DOMAIN_API}/api/v1/auth/register"
+
+    local health_url="https://${DOMAIN_API}/api/v1/health"
+    log_info "Attesa disponibilita' backend su $health_url..."
+    local max_attempts=24
+    local attempt=0
+    local healthy=0
+    while [[ $attempt -lt $max_attempts ]]; do
+        if curl -sf "$health_url" >/dev/null 2>&1; then
+            healthy=1
+            break
+        fi
+        attempt=$((attempt + 1))
+        sleep 5
+    done
+    if [[ "$healthy" -ne 1 ]]; then
+        log_warn "Backend non risponde dopo 2 minuti."
+        log_warn "Crea l'utente manualmente da: https://${DOMAIN_ADMIN}"
+        return
+    fi
+
     log_info "Creazione admin backend su $api_url..."
 
     local response
-    response=$(curl -s -w "\\n%{http_code}" -X POST "$api_url" \
+    response=$(curl -s --max-time 30 -w "\\n%{http_code}" -X POST "$api_url" \
         -H "Content-Type: application/json" \
         -d "{\"email\":\"${ADMIN_BACKEND_EMAIL}\",\"password\":\"${ADMIN_BACKEND_PASSWORD}\"}" || true)
 
@@ -19,9 +39,15 @@ create_backend_admin() {
     local body
     body=$(echo "$response" | sed '$d')
 
+    if [[ -z "$http_code" ]]; then
+        log_warn "Nessuna risposta dal backend durante la creazione dell'admin."
+        log_warn "Crea l'utente manualmente da: https://${DOMAIN_ADMIN}"
+        return
+    fi
+
     if [[ "$http_code" == "200" || "$http_code" == "201" ]]; then
         log_success "Admin backend creato."
-    elif echo "$body" | grep -qi "already exists\\|esiste già"; then
+    elif echo "$body" | grep -qi "already registered\\|already exists\\|esiste già"; then
         log_warn "Utente backend esiste gia'."
     else
         log_warn "Creazione admin backend fallita (HTTP $http_code)."
