@@ -7,7 +7,7 @@ SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
 
 # Supporto per curl ... | bash: se lo script e' pipe-ato o i moduli non sono presenti, clona il repo.
 if [[ -z "$SCRIPT_SOURCE" || "$SCRIPT_SOURCE" == "-" || ! -d "${SCRIPT_SOURCE%/*}/setup" ]]; then
-    REPO_URL="${REPO_URL:-https://github.com/tuo-org/graph-rag-assistant.git}"
+    REPO_URL="${REPO_URL:-https://github.com/graph-rag-assistant/graph-rag-assistant.git}"
     TARGET_DIR="${HOME}/graph-rag-assistant"
     echo "[INFO] Moduli installer non trovati. Clonazione repository da $REPO_URL in $TARGET_DIR..."
     if [[ ! -d "$TARGET_DIR/.git" ]]; then
