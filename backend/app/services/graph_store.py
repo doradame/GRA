@@ -74,6 +74,11 @@ class GraphStore:
             logger.info("[graph] Closing Neo4j driver")
             self._driver.close()
 
+    def check_connection(self):
+        """Run a trivial query to verify Neo4j connectivity."""
+        with self.driver.session() as session:
+            session.run("RETURN 1")
+
     def add_document(self, doc_id: str, filename: str, content_type: str, user_id: str | None = None):
         logger.debug("[graph] Adding document node: %s", doc_id)
         with self.driver.session() as session:
