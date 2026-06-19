@@ -33,7 +33,7 @@ run_clone() {
             log_error "Impossibile entrare in $target_dir"
             exit 1
         fi
-        PROJECT_DIR="$target_dir"
+        PROJECT_DIR="$(pwd)"
         log_success "Repository clonato in $target_dir"
     else
         log_error "Impossibile continuare senza il repository."

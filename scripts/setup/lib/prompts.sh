@@ -38,6 +38,7 @@ ask_password() {
     local original_stty
 
     original_stty=$(stty -g)
+    # shellcheck disable=SC2317
     restore_echo() { stty "$original_stty"; }
     trap restore_echo INT TERM EXIT
 

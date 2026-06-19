@@ -6,12 +6,11 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/colors.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/lib/prompts.sh"
 
-if [[ ! -f "docker-compose.yml" ]]; then
-    log_error "Esegui questo script dalla root del progetto Graph RAG Assistant."
-    exit 1
-fi
-
 run_launch() {
+    if [[ ! -f "docker-compose.yml" ]]; then
+        log_error "Esegui questo script dalla root del progetto Graph RAG Assistant."
+        exit 1
+    fi
     log_step "70" "Avvio stack Docker"
     docker compose pull
     docker compose up -d
