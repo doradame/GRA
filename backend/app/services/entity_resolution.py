@@ -14,6 +14,24 @@ logger = logging.getLogger(__name__)
 DEFAULT_THRESHOLD = 0.93
 DEFAULT_BATCH_SIZE = 64
 
+# Cypher di merge di due entità: fonde `other_id` nel `canonical_id` preservando
+# relazioni e proprietà. Eseguito in batch dentro una singola transazione per gruppo
+# (vedi resolve_entities) così un fallimento a metà gruppo fa rollback dell'intero
+# gruppo invece di lasciare entità parzialmente fuse.
+_MERGE_ENTITIES_CYPHER = """
+MATCH (a:Entity {id: $canonical_id})
+MATCH (b:Entity {id: $other_id})
+WITH [a, b] AS nodes
+CALL apoc.refactor.mergeNodes(nodes, {
+    properties: 'combine',
+    mergeRels: true,
+    preserveExistingProperties: true
+})
+YIELD node
+SET node.id = $canonical_id
+RETURN node.id AS id
+"""
+
 
 class _UnionFind:
     """Union-Find semplice per raggruppare entità da fondere."""
@@ -149,6 +167,8 @@ async def resolve_entities(
 
             canonical_id = _pick_canonical_id(group)
             other_ids = [e["id"] for e in group if e["id"] != canonical_id]
+            if not other_ids:
+                continue
             logger.info(
                 "[entity_resolution] Merging group of %s entities into canonical=%s (%s)",
                 len(group),
@@ -156,36 +176,28 @@ async def resolve_entities(
                 next((e["name"] for e in group if e["id"] == canonical_id), ""),
             )
 
-            for other_id in other_ids:
-                try:
-                    with graph_store.driver.session() as session:
-                        session.run(
-                            """
-                            MATCH (a:Entity {id: $canonical_id})
-                            MATCH (b:Entity {id: $other_id})
-                            WITH [a, b] AS nodes
-                            CALL apoc.refactor.mergeNodes(nodes, {
-                                properties: 'combine',
-                                mergeRels: true,
-                                preserveExistingProperties: true
-                            })
-                            YIELD node
-                            SET node.id = $canonical_id
-                            RETURN node.id AS id
-                            """,
-                            canonical_id=canonical_id,
-                            other_id=other_id,
-                        )
-                    removed_count += 1
-                except Exception as exc:
-                    logger.exception(
-                        "[entity_resolution] Failed to merge %s into %s: %s",
-                        other_id,
-                        canonical_id,
-                        exc,
-                    )
-
-            merged_groups += 1
+            # Tutto il gruppo in UNA transazione Neo4j: se un merge fallisce il gruppo
+            # resta non fuso (rollback) invece di parzialmente fuso. Il merge non è
+            # idempotente di per sé, ma il lock distribuito + retry disabilitato nel
+            # task impediscono re-run sovrapposti che aggraverebbero un fallimento.
+            try:
+                with graph_store.driver.session() as session:
+                    with session.begin_transaction() as tx:
+                        for other_id in other_ids:
+                            tx.run(
+                                _MERGE_ENTITIES_CYPHER,
+                                canonical_id=canonical_id,
+                                other_id=other_id,
+                            )
+                removed_count += len(other_ids)
+                merged_groups += 1
+            except Exception as exc:
+                logger.exception(
+                    "[entity_resolution] Failed to merge group of %s into canonical=%s: %s",
+                    len(other_ids),
+                    canonical_id,
+                    exc,
+                )
 
     logger.info(
         "[entity_resolution] Completed: examined=%s merged_groups=%s removed_entities=%s",
