@@ -80,6 +80,25 @@ class IngestionJobOut(BaseModel):
     error_message: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+
+    started_parsing_at: Optional[datetime] = None
+    completed_parsing_at: Optional[datetime] = None
+    started_chunking_at: Optional[datetime] = None
+    completed_chunking_at: Optional[datetime] = None
+    started_embedding_at: Optional[datetime] = None
+    completed_embedding_at: Optional[datetime] = None
+    started_vector_indexing_at: Optional[datetime] = None
+    completed_vector_indexing_at: Optional[datetime] = None
+    started_graph_indexing_at: Optional[datetime] = None
+    completed_graph_indexing_at: Optional[datetime] = None
+
+    chunk_count: Optional[int] = None
+    entity_count: Optional[int] = None
+    relation_count: Optional[int] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    cost_estimate_usd: Optional[float] = None
+
     created_at: datetime
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
@@ -178,6 +197,13 @@ class QueryLogOut(BaseModel):
     citation_count: int = 0
     error: Optional[str] = None
     latency_ms: Optional[int] = None
+
+    tool_used: Optional[str] = None
+    iteration_count: Optional[int] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    cost_estimate_usd: Optional[float] = None
+
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
@@ -190,3 +216,31 @@ class QueryLogOut(BaseModel):
 class QueryLogList(BaseModel):
     items: List[QueryLogOut]
     total: int
+
+
+# Admin monitoring
+class ServiceHealthOut(BaseModel):
+    service: str
+    status: str
+    latency_ms: Optional[int] = None
+    last_check_at: datetime
+    error_message: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class IngestionMetricsOut(BaseModel):
+    items: List[IngestionJobOut]
+    total: int
+
+
+class QueryMetricsOut(BaseModel):
+    items: List[QueryLogOut]
+    total: int
+
+
+class AdminMetricsOut(BaseModel):
+    documents: dict
+    recent_ingestions: List[IngestionJobOut]
+    recent_queries: List[QueryLogOut]
+    services: List[ServiceHealthOut]
+    api_usage: dict
