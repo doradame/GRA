@@ -5,6 +5,11 @@ set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/colors.sh"
 
+if [[ ! -f "docker-compose.yml" ]]; then
+    log_error "Esegui questo script dalla root del progetto Graph RAG Assistant."
+    exit 1
+fi
+
 backup_file() {
     local file="$1"
     if [[ -f "$file" ]]; then
@@ -201,6 +206,7 @@ CONFIGEOF
 
 run_config() {
     log_step "50" "Scrittura file di configurazione"
+    mkdir -p librechat
     write_env
     write_caddyfile
     write_librechat_config
