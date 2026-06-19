@@ -146,56 +146,62 @@ async def _generate_summary(
     return response.choices[0].message.content or ""
 
 
-def _save_community_summary(
-    community_id: str,
-    summary: str,
-    entity_ids: List[str],
-    relation_count: int,
-    level: str,
-):
+def _persist_community_summaries(records: List[Dict[str, Any]]) -> None:
+    """Scrive i CommunitySummary su Neo4j in modo idempotente e non-distruttivo.
+
+    1) MERGE batched (id UUID5 deterministici `community-{level}-{comm_id}`): un re-run
+       sullo stesso grafo aggiorna in-place i nodi esistenti invece di duplicarli, perché
+       Louvain (random_state=42) assegna gli stessi comm_id a parità di grafo → stessi id.
+    2) Delete-stale DOPO: rimuove i CommunitySummary di run precedenti i cui id non sono
+       più tra quelli appena scritti (es. entità cancellate o grafo mutato → comm_id
+       diversi). Sostituisce il vecchio `_clear_all_community_summaries()` (che cancellava
+       TUTTO prima di rigenerare), ed è eseguito per ultimo: un crash a metà del MERGE
+       lascia vecchi + nuovi parziali (duplicati, non perdita di dati); al retry il MERGE
+       completa e il delete pulisce i superflui.
+    """
+    new_ids = [r["community_id"] for r in records]
     with graph_store.driver.session() as session:
+        if records:
+            session.run(
+                """
+                UNWIND $rows AS row
+                MERGE (cs:CommunitySummary {id: row.community_id})
+                SET cs.summary = row.summary,
+                    cs.entity_count = row.entity_count,
+                    cs.relation_count = row.relation_count,
+                    cs.level = row.level,
+                    cs.updated_at = datetime()
+                WITH cs, row
+                UNWIND row.entity_ids AS entity_id
+                MATCH (e:Entity {id: entity_id})
+                MERGE (e)-[:BELONGS_TO_COMMUNITY]->(cs)
+                """,
+                rows=records,
+            )
+        # Rimuovi i summary di run precedenti non più validi (id non presenti nel run corrente).
         session.run(
             """
-            MERGE (cs:CommunitySummary {id: $community_id})
-            SET cs.summary = $summary,
-                cs.entity_count = $entity_count,
-                cs.relation_count = $relation_count,
-                cs.level = $level,
-                cs.updated_at = datetime()
-            WITH cs
-            UNWIND $entity_ids AS entity_id
-            MATCH (e:Entity {id: entity_id})
-            MERGE (e)-[:BELONGS_TO_COMMUNITY]->(cs)
+            MATCH (cs:CommunitySummary)
+            WHERE NOT cs.id IN $new_ids
+            DETACH DELETE cs
             """,
-            community_id=community_id,
-            summary=summary,
-            entity_count=len(entity_ids),
-            relation_count=relation_count,
-            level=level,
-            entity_ids=entity_ids,
+            new_ids=new_ids,
         )
 
 
-def _clear_all_community_summaries() -> None:
-    """Rimuove tutti i nodi CommunitySummary (e i relativi archi) prima di un rebuild.
-
-    La numerazione delle community di Louvain non è stabile tra run successivi (anche a
-    parità di grafo): senza questa pulizia, gli archi BELONGS_TO_COMMUNITY di run precedenti
-    si accumulerebbero invece di essere sostituiti, e _prune_orphan_summaries non li
-    individuerebbe come orfani (hanno ancora entità collegate, solo con id di community
-    ormai diversi). Un rebuild completo ad ogni run evita questa deriva.
-    """
-    with graph_store.driver.session() as session:
-        session.run("MATCH (cs:CommunitySummary) DETACH DELETE cs")
-
-
-async def _process_level(
+async def _generate_level_summaries(
     level: str,
     community_entities: Dict[int, List[str]],
     entities: Dict[str, Dict[str, Any]],
     relations: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    results = []
+    """Genera i summary delle community di un livello SOLO in memoria (chiamate LLM).
+
+    Nessuna scrittura su Neo4j: ritorna record pronti per `_persist_community_summaries`.
+    Isolare la generazione (la parte costosa e fallibile) dalla scrittura è ciò che rende
+    il rebuild non-distruttivo: un crash qui lascia i CommunitySummary esistenti intatti.
+    """
+    records: List[Dict[str, Any]] = []
     for comm_id, entity_ids in community_entities.items():
         entity_set = set(entity_ids)
         internal_relations = [
@@ -204,25 +210,19 @@ async def _process_level(
         ]
         community_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"community-{level}-{comm_id}"))
         summary = await _generate_summary(comm_id, entity_ids, internal_relations, entities)
-        _save_community_summary(
-            community_id=community_uuid,
-            summary=summary,
-            entity_ids=entity_ids,
-            relation_count=len(internal_relations),
-            level=level,
-        )
-        results.append({
+        records.append({
             "community_id": community_uuid,
             "summary": summary,
+            "entity_ids": entity_ids,
             "entity_count": len(entity_ids),
             "relation_count": len(internal_relations),
             "level": level,
         })
         logger.info(
-            "[community_detection] Community %s (livello=%s) salvata: %s entità, %s relazioni",
+            "[community_detection] Community %s (livello=%s) generata: %s entità, %s relazioni",
             community_uuid, level, len(entity_ids), len(internal_relations),
         )
-    return results
+    return records
 
 
 async def run_community_detection(
@@ -238,28 +238,35 @@ async def run_community_detection(
     G, entities, relations = _build_entity_graph()
     leaf_partition = _detect_communities(G, algorithm, resolution)
 
-    _clear_all_community_summaries()
-
     if not leaf_partition:
         logger.info("[community_detection] Nessuna community rilevata")
-        return {"communities": [], "total_entities": 0, "total_relations": 0}
+        # Grafo senza community: persistenzia l'insieme vuoto (delete-stale rimuove i
+        # summary di run precedenti) per mantenere il grafo coerente con quello attuale.
+        _persist_community_summaries([])
+        return {"communities": [], "total_entities": len(entities), "total_relations": len(relations)}
 
     root_partition = _detect_root_communities(G, algorithm, resolution) or leaf_partition
 
+    # Genera TUTTI i summary in memoria prima di qualsiasi scrittura Neo4j: se il job
+    # crasha qui (OOM, rate-limit LLM) i CommunitySummary esistenti restano intatti. La
+    # persistenza successiva è idempotenta + delete-stale, quindi il rebuild è
+    # non-distruttivo anche se interrotto e ripreso.
     leaf_groups = _group_by_community(leaf_partition)
-    results = await _process_level("leaf", leaf_groups, entities, relations)
+    records = await _generate_level_summaries("leaf", leaf_groups, entities, relations)
 
     if root_partition != leaf_partition:
         root_groups = _group_by_community(root_partition)
-        results += await _process_level("root", root_groups, entities, relations)
+        records += await _generate_level_summaries("root", root_groups, entities, relations)
     else:
         # Grafo troppo piccolo/uniforme per una gerarchia reale: il leaf coincide col root.
         # Rietichettiamo comunque le stesse community come "root" così le query globali le
         # trovano senza dover gestire un caso speciale in community_tool.py.
-        results += await _process_level("root", leaf_groups, entities, relations)
+        records += await _generate_level_summaries("root", leaf_groups, entities, relations)
+
+    _persist_community_summaries(records)
 
     return {
-        "communities": results,
+        "communities": records,
         "total_entities": len(entities),
         "total_relations": len(relations),
     }
