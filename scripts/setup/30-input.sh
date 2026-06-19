@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Collect domain, API keys, email, and admin credentials from the user.
 # shellcheck shell=bash source-path=SCRIPTDIR
+set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/colors.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/lib/prompts.sh"
@@ -45,8 +46,9 @@ run_input() {
         if is_valid_email "$EMAIL_FROM"; then break; fi
         log_error "Email non valida."
     done
-    read -rp "Nome mittente [Graph RAG Assistant]: " EMAIL_FROM_NAME
-    EMAIL_FROM_NAME=${EMAIL_FROM_NAME:-"Graph RAG Assistant"}
+    local name_input
+    read -rp "Nome mittente [Graph RAG Assistant]: " name_input
+    EMAIL_FROM_NAME=${name_input:-"Graph RAG Assistant"}
 
     while true; do
         ask_required "Email admin backend" "ADMIN_BACKEND_EMAIL"
@@ -64,9 +66,18 @@ run_input() {
 
     echo
     log_banner "Riepilogo"
-    log_info "Dominio root:     $DOMAIN_ROOT"
-    log_info "Admin backend:    $ADMIN_BACKEND_EMAIL"
-    log_info "Admin LibreChat:  $ADMIN_LIBRECHAT_EMAIL"
+    log_info "Dominio root:        $DOMAIN_ROOT"
+    log_info "  Admin panel:       $DOMAIN_ADMIN"
+    log_info "  API backend:       $DOMAIN_API"
+    log_info "  LibreChat:         $DOMAIN_CHAT"
+    log_info "  LibreChat Admin:   $DOMAIN_CHAT_ADMIN"
+    log_info "  MCP Server:        $DOMAIN_MCP"
+    log_info "OpenAI API Key:      fornita (${#OPENAI_API_KEY} caratteri)"
+    log_info "Resend API Key:      fornita (${#RESEND_API_KEY} caratteri)"
+    log_info "Email mittente:      $EMAIL_FROM_NAME <$EMAIL_FROM>"
+    log_info "Admin backend:       $ADMIN_BACKEND_EMAIL"
+    log_info "Admin LibreChat:     $ADMIN_LIBRECHAT_EMAIL"
+    log_info "Password admin:      impostate"
     if ! ask_yes_no "Confermi di voler procedere?" "y"; then
         log_info "Setup annullato dall'utente."
         exit 0

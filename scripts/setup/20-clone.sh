@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Detect existing project directory or clone the repository.
 # shellcheck shell=bash source-path=SCRIPTDIR
+set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/colors.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/lib/prompts.sh"
@@ -17,10 +18,21 @@ run_clone() {
     if ask_yes_no "Vuoi clonare il repository?" "y"; then
         local repo_url
         ask_required "URL del repository Git" "repo_url"
-        local target_dir="${HOME}/graph-rag-assistant"
-        ask_required "Cartella di destinazione" "target_dir"
-        git clone "$repo_url" "$target_dir"
-        cd "$target_dir"
+        local target_dir
+        read -rp "Cartella di destinazione [${HOME}/graph-rag-assistant]: " target_dir
+        target_dir=${target_dir:-"${HOME}/graph-rag-assistant"}
+        if [[ -z "$target_dir" ]]; then
+            log_error "Cartella di destinazione non valida."
+            exit 1
+        fi
+        if ! git clone "$repo_url" "$target_dir"; then
+            log_error "Clonazione fallita."
+            exit 1
+        fi
+        if ! cd "$target_dir"; then
+            log_error "Impossibile entrare in $target_dir"
+            exit 1
+        fi
         PROJECT_DIR="$target_dir"
         log_success "Repository clonato in $target_dir"
     else
