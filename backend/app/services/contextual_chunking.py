@@ -34,7 +34,7 @@ async def _generate_one_context(document: str, chunk: str, semaphore: asyncio.Se
                 model=settings.contextual_retrieval_model,
                 messages=[{"role": "user", "content": CONTEXT_PROMPT.format(document=document, chunk=chunk)}],
                 temperature=0.0,
-                max_tokens=150,
+                max_completion_tokens=150,
             )
             increment_contextual_retrieval_calls(tokens=response.usage.total_tokens if response.usage else 0)
             return (response.choices[0].message.content or "").strip()

@@ -141,7 +141,7 @@ async def _generate_summary(
         model=settings.community_summary_model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
-        max_tokens=400,
+        max_completion_tokens=400,
     )
     return response.choices[0].message.content or ""
 
