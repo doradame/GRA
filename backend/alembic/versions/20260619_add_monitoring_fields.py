@@ -52,9 +52,8 @@ def upgrade() -> None:
         sa.Column('last_check_at', sa.DateTime(), nullable=False),
         sa.Column('error_message', sa.Text(), nullable=True),
         sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('service'),
     )
-    op.create_index(op.f('ix_service_health_checks_service'), 'service_health_checks', ['service'], unique=False)
+    op.create_index(op.f('ix_service_health_checks_service'), 'service_health_checks', ['service'], unique=True)
 
 
 def downgrade() -> None:
