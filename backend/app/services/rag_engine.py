@@ -13,6 +13,7 @@ from app.models.schemas import Citation
 from app.services.agent.graph import agent_graph
 from app.services.agent.state import AgentState
 from app.services.query_log import record_query_log
+from app.services.reranker import rerank_cross_encoder
 from app.services.retrieval_utils import (
     format_reference,
     extract_quote,
@@ -61,7 +62,10 @@ async def build_context(
         )
 
     # Keep only results with a meaningful similarity score
-    reranked = rerank_hybrid(query, [r for r in results if r["score"] >= threshold])
+    candidates = [r for r in results if r["score"] >= threshold]
+    reranked = rerank_cross_encoder(query, candidates)
+    if reranked is None:
+        reranked = rerank_hybrid(query, candidates)
     filtered = diversify_results(reranked)[:top_k]
 
     citations: List[Citation] = []

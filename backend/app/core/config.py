@@ -24,8 +24,6 @@ class Settings(BaseSettings):
     embedding_batch_size: int = 96
     enable_ocr: bool = False
     min_text_chars_for_ocr: int = 100
-    max_graph_extraction_chunks: int = 48  # deprecated, kept for backward compatibility
-    max_relation_extraction_chunks: int | None = None  # if None, falls back to max_graph_extraction_chunks
     enable_gliner: bool = True
     gliner_model: str = "gliner-community/gliner_small-v2.5"
     gliner_labels: str = "Persona,Organizzazione,Luogo,Prodotto,Concetto,Regola,Requisito,Rischio,Data,Numero,Sistema"
@@ -33,6 +31,12 @@ class Settings(BaseSettings):
     retrieval_oversampling_factor: int = 3
     retrieval_lexical_weight: float = 0.15
     retrieval_score_threshold: float = 0.25
+    enable_reranker: bool = True
+    reranker_model: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+    document_categories: str = (
+        "Normativa e Legale,Contrattualistica,Manualistica tecnica,"
+        "Reportistica e Analisi,Risorse umane,Corrispondenza,Altro"
+    )
     secret_key: str = "supersecretchangeme"
     access_token_expire_minutes: int = 60
     frontend_admin_url: str = "http://localhost:5173"

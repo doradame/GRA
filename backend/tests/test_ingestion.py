@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
 from app.services.ingestion import (
+    _build_chunk_embedding_input,
+    _build_document_context,
     _find_chunk_span,
     _infer_section_title,
     _pages_for_span,
@@ -42,3 +44,20 @@ def test_chunk_span_and_page_mapping_helpers():
         SimpleNamespace(page=2, start_char=15, end_char=len(text)),
     ]
     assert _pages_for_span(pages, start, end) == (2, 2)
+
+
+def test_build_document_context_includes_only_provided_fields():
+    full = _build_document_context("manuale.pdf", "Manualistica tecnica", "Guida operativa per il personale")
+    assert full == "Documento: manuale.pdf\nCategoria: Manualistica tecnica\nDescrizione: Guida operativa per il personale"
+
+    minimal = _build_document_context("manuale.pdf", None, None)
+    assert minimal == "Documento: manuale.pdf"
+
+
+def test_build_chunk_embedding_input_prepends_context_and_section():
+    context = "Documento: manuale.pdf\nCategoria: Manualistica tecnica"
+    with_section = _build_chunk_embedding_input(context, "CONDIZIONI GENERALI", "Testo del chunk.")
+    assert with_section == "Documento: manuale.pdf\nCategoria: Manualistica tecnica\n\nSezione: CONDIZIONI GENERALI\n\nTesto del chunk."
+
+    without_section = _build_chunk_embedding_input(context, None, "Testo del chunk.")
+    assert without_section == "Documento: manuale.pdf\nCategoria: Manualistica tecnica\n\nTesto del chunk."

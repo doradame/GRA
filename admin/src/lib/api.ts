@@ -21,6 +21,8 @@ export interface Document {
   filename: string
   content_type: string
   size_bytes: number
+  description: string | null
+  category: string | null
   parser: string | null
   page_count: number | null
   text_chars: number | null
@@ -87,13 +89,20 @@ export async function fetchDocumentIngestionJobs(documentId: string) {
   return res.data.items as IngestionJob[]
 }
 
-export async function uploadDocument(file: File) {
+export async function uploadDocument(file: File, description?: string, category?: string) {
   const form = new FormData()
   form.append('file', file)
+  if (description) form.append('description', description)
+  if (category) form.append('category', category)
   const res = await api.post('/documents/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
   return res.data as Document
+}
+
+export async function fetchDocumentCategories() {
+  const res = await api.get('/documents/categories')
+  return res.data.categories as string[]
 }
 
 export async function exploreGraph(entity: string) {

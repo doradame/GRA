@@ -80,6 +80,29 @@ def _infer_section_title(text: str) -> str | None:
     return None
 
 
+def _build_document_context(filename: str, category: str | None, description: str | None) -> str:
+    """Header riusato per ogni chunk del documento (contextual retrieval).
+
+    Antepone titolo/categoria/descrizione fornita dall'utente al testo del chunk
+    SOLO per l'embedding e il vettore sparso: il testo del chunk salvato per le
+    citazioni e il contesto LLM resta quello originale, non modificato.
+    """
+    parts = [f"Documento: {filename}"]
+    if category:
+        parts.append(f"Categoria: {category}")
+    if description:
+        parts.append(f"Descrizione: {description.strip()}")
+    return "\n".join(parts)
+
+
+def _build_chunk_embedding_input(document_context: str, section_title: str | None, chunk_text_content: str) -> str:
+    parts = [document_context]
+    if section_title:
+        parts.append(f"Sezione: {section_title}")
+    parts.append(chunk_text_content)
+    return "\n\n".join(parts)
+
+
 def _find_chunk_span(text: str, chunk: str, start_from: int = 0) -> tuple[int, int]:
     start = text.find(chunk, start_from)
     if start == -1 and start_from:
@@ -190,6 +213,8 @@ async def create_document(
     content_type: str,
     data: bytes,
     user_id: str,
+    description: str | None = None,
+    category: str | None = None,
 ) -> Document:
     """Create the initial document record, upload to storage, and return it.
 
@@ -240,6 +265,8 @@ async def create_document(
         content_type=content_type,
         size_bytes=len(data),
         storage_key=storage_key,
+        description=description or None,
+        category=category or None,
         status=STATUS_UPLOADED,
         created_by=user_id,
     )
@@ -317,14 +344,24 @@ async def process_document(
                 if not chunks:
                     raise ValueError("Document text did not produce any chunks")
 
-                # Build token corpus for BM25 sparse vector IDF computation.
-                corpus_tokens = [tokenize_sparse(chunk) for chunk in chunks]
+                # Contextual retrieval: antepone titolo/categoria/descrizione (e sezione, se rilevata)
+                # al testo di ogni chunk solo per l'embedding e il vettore sparso. Il testo salvato per
+                # citazioni e contesto LLM (chunk_text_content) resta quello originale.
+                document_context = _build_document_context(filename, doc.category, doc.description)
+                section_titles = [_infer_section_title(chunk) for chunk in chunks]
+                embedding_inputs = [
+                    _build_chunk_embedding_input(document_context, section_title, chunk)
+                    for chunk, section_title in zip(chunks, section_titles)
+                ]
+
+                # Build token corpus for BM25 sparse vector IDF computation (sugli input contestualizzati).
+                corpus_tokens = [tokenize_sparse(chunk) for chunk in embedding_inputs]
                 logger.debug("[ingestion] Built sparse corpus with %s tokenized chunks", len(corpus_tokens))
 
                 # Embed chunks
                 await _set_document_status(db, doc, STATUS_EMBEDDING, job=job)
                 logger.info("[ingestion] Generating embeddings for %s chunks of document_id=%s", len(chunks), document_id)
-                embeddings = await embed_texts(chunks)
+                embeddings = await embed_texts(embedding_inputs)
                 logger.info("[ingestion] Embeddings generated for document_id=%s", document_id)
                 if len(embeddings) != len(chunks):
                     raise ValueError(f"Embedding count mismatch: chunks={len(chunks)} embeddings={len(embeddings)}")
@@ -332,10 +369,11 @@ async def process_document(
                 qdrant_points = []
                 chunk_records = []
                 span_cursor = 0
-                for idx, (chunk_text_content, embedding) in enumerate(zip(chunks, embeddings)):
+                for idx, (chunk_text_content, embedding, section_title, embedding_input) in enumerate(
+                    zip(chunks, embeddings, section_titles, embedding_inputs)
+                ):
                     text_hash = _hash_text(chunk_text_content)
                     token_count = _token_count(chunk_text_content, settings.embedding_model)
-                    section_title = _infer_section_title(chunk_text_content)
                     span_start, span_end = _find_chunk_span(text, chunk_text_content, span_cursor)
                     span_cursor = span_end
                     page_start, page_end = _pages_for_span(parsed.pages, span_start, span_end)
@@ -364,7 +402,7 @@ async def process_document(
                             id=qdrant_id,
                             vector=vector_store.build_point_vector(
                                 embedding,
-                                build_sparse_vector(chunk_text_content, corpus_tokens),
+                                build_sparse_vector(embedding_input, corpus_tokens),
                             ),
                             payload={
                                 "chunk_id": chunk_id,
@@ -405,11 +443,8 @@ async def process_document(
                 logger.info("[ingestion] Document node added to graph: document_id=%s", document_id)
 
                 progress_step = max(1, len(chunks) // 20)
-                # GLiNER estrae entità da tutti i chunk; il limite si applica solo alle relazioni LLM.
-                max_relation_chunks_setting = settings.max_relation_extraction_chunks
-                if max_relation_chunks_setting is None:
-                    max_relation_chunks_setting = settings.max_graph_extraction_chunks
-                max_relation_chunks = max(0, max_relation_chunks_setting)
+                # GLiNER ed estrazione relazioni LLM girano su TUTTI i chunk: niente cap per costo,
+                # altrimenti la maggior parte delle entità di documenti lunghi resta isolata nel grafo.
 
                 for idx, chunk_text_content in enumerate(chunks):
                     text_hash = _hash_text(chunk_text_content)
@@ -432,27 +467,20 @@ async def process_document(
                         )
                         entities = []
 
-                    # 2. Estrazione relazioni con LLM solo per i primi chunk (controllo costi).
-                    relations: list[dict] = []
-                    if idx < max_relation_chunks:
-                        logger.debug("[ingestion] Extracting relations with LLM for chunk %s/%s of document_id=%s", idx + 1, len(chunks), document_id)
-                        try:
-                            relations = await extract_relations(chunk_text_content, entities)
-                        except Exception as extraction_error:
-                            logger.warning(
-                                "[ingestion] Relation extraction failed for chunk %s/%s of document_id=%s: %s",
-                                idx + 1,
-                                len(chunks),
-                                document_id,
-                                extraction_error,
-                            )
-                            relations = []
-                    elif idx == max_relation_chunks:
-                        logger.info(
-                            "[ingestion] Skipping LLM relation extraction after %s chunks for document_id=%s",
-                            max_relation_chunks,
+                    # 2. Estrazione relazioni con LLM per ogni chunk (extract_relations salta da sé
+                    # i chunk con meno di 2 entità, quindi qui non serve un cap manuale).
+                    logger.debug("[ingestion] Extracting relations with LLM for chunk %s/%s of document_id=%s", idx + 1, len(chunks), document_id)
+                    try:
+                        relations = await extract_relations(chunk_text_content, entities)
+                    except Exception as extraction_error:
+                        logger.warning(
+                            "[ingestion] Relation extraction failed for chunk %s/%s of document_id=%s: %s",
+                            idx + 1,
+                            len(chunks),
                             document_id,
+                            extraction_error,
                         )
+                        relations = []
 
                     logger.debug(
                         "[ingestion] Chunk %s/%s extracted %s entities and %s relations for document_id=%s",

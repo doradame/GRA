@@ -32,6 +32,8 @@ class Document(Base):
     content_type = Column(String(128), nullable=False)
     size_bytes = Column(Integer, nullable=False)
     storage_key = Column(String(512), nullable=False)
+    description = Column(Text, nullable=True)
+    category = Column(String(128), nullable=True)
     parser = Column(String(128), nullable=True)
     page_count = Column(Integer, nullable=True)
     text_chars = Column(Integer, nullable=True)

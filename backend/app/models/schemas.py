@@ -40,6 +40,8 @@ class DocumentOut(BaseModel):
     filename: str
     content_type: str
     size_bytes: int
+    description: Optional[str] = None
+    category: Optional[str] = None
     parser: Optional[str] = None
     page_count: Optional[int] = None
     text_chars: Optional[int] = None
@@ -60,6 +62,10 @@ class DocumentOut(BaseModel):
 class DocumentList(BaseModel):
     items: List[DocumentOut]
     total: int
+
+
+class DocumentCategoryList(BaseModel):
+    categories: List[str]
 
 
 class IngestionJobOut(BaseModel):

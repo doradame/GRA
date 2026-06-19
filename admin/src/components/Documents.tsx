@@ -111,7 +111,14 @@ export default function Documents({ onTokenInvalid }: Props) {
               const progress = job?.progress ?? (doc.status === 'completed' ? 100 : 0)
               return (
                 <tr key={doc.id} className="border-b last:border-0">
-                  <td className="py-2">{doc.filename}</td>
+                  <td className="py-2">
+                    <div title={doc.description || undefined}>{doc.filename}</div>
+                    {doc.category && (
+                      <span className="inline-block mt-1 px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-600">
+                        {doc.category}
+                      </span>
+                    )}
+                  </td>
                   <td className="py-2">
                     <div>{doc.content_type}</div>
                     {doc.parser && (

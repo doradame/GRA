@@ -7,6 +7,7 @@ from app.services.embeddings import embed_text
 from app.services.vector_store import vector_store
 from app.services.graph_store import graph_store
 from app.services.sparse_vectors import build_sparse_vector
+from app.services.reranker import rerank_cross_encoder
 from app.services.retrieval_utils import (
     format_reference,
     extract_quote,
@@ -43,7 +44,10 @@ async def vector_tool(
             filter=query_filter,
         )
 
-    reranked = rerank_hybrid(query, [r for r in results if r["score"] >= threshold])
+    candidates = [r for r in results if r["score"] >= threshold]
+    reranked = rerank_cross_encoder(query, candidates)
+    if reranked is None:
+        reranked = rerank_hybrid(query, candidates)
     filtered = diversify_results(reranked)[:top_k]
 
     citations: List[Citation] = []

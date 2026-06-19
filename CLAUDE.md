@@ -72,9 +72,9 @@ Three credential paths are accepted by `get_current_user_or_mcp` (`core/auth.py`
 Sequential phases tracked on `Document.status` / `IngestionJob` (`services/ingestion.py` `STATUS_*` constants, with `PHASE_PROGRESS` percentages surfaced to the admin UI):
 1. `parsing` — `services/parsing.py` extracts text (+ optional OCR, gated by `ENABLE_OCR`/`MIN_TEXT_CHARS_FOR_OCR`) and per-page spans.
 2. `chunking` — `services/chunking.py` splits text into chunks, tracking char/page spans for citations.
-3. `embedding` — `services/embeddings.py` (OpenAI embeddings, batched via `EMBEDDING_BATCH_SIZE`) plus `services/sparse_vectors.py` (BM25-like sparse vectors: NLTK tokenization, BLAKE2b hashed buckets, IDF over the chunk corpus, L2-normalized).
+3. `embedding` — `services/embeddings.py` (OpenAI embeddings, batched via `EMBEDDING_BATCH_SIZE`) plus `services/sparse_vectors.py` (BM25-like sparse vectors: NLTK tokenization, BLAKE2b hashed buckets, IDF over the chunk corpus, L2-normalized). Before embedding, each chunk is prefixed with a "contextual retrieval" header built by `ingestion._build_document_context`/`_build_chunk_embedding_input` — document filename + the user-supplied `category`/`description` (set at upload time, see `Document.category`/`Document.description`) + the chunk's inferred section title. This contextualized text is only the embedding/sparse-vector *input*; the chunk's stored `text` (Postgres + Qdrant payload, used for citations and LLM context) stays unmodified.
 4. `vector_indexing` — upsert dense+sparse vectors into Qdrant (`services/vector_store.py`), batched via `QDRANT_UPSERT_BATCH_SIZE`.
-5. `graph_indexing` — entity extraction via GLiNER (`services/gliner_extraction.py`, runs over *all* chunks, labels/threshold from `GLINER_LABELS`/`GLINER_THRESHOLD`) plus relation extraction via LLM (`services/extraction.py`, capped to `MAX_RELATION_EXTRACTION_CHUNKS` chunks for cost control), written into Neo4j (`services/graph_store.py`). Entity IDs are `SHA256(type:name)` to stay consistent across both extraction paths.
+5. `graph_indexing` — entity extraction via GLiNER (`services/gliner_extraction.py`) plus relation extraction via LLM (`services/extraction.py`), both running over *all* chunks (no chunk cap — capping previously left most entities in long documents without any entity-entity relation), written into Neo4j (`services/graph_store.py`). Entity IDs are `SHA256(type:name)` to stay consistent across both extraction paths.
 6. `completed` / `error`.
 
 Two background tasks operate on the graph after ingestion, both admin-only and Celery-driven (`routers/graph.py`):
@@ -93,7 +93,10 @@ A LangGraph `StateGraph` (`agent/graph.py`) compiled once at import time as `age
 
 `AgentState` (TypedDict in `agent/state.py`) is the contract threaded through every node — when adding a new tool/intent, extend this state, add a node, and wire it into `agent/graph.py`'s conditional edges.
 
-`rag_engine.build_context` (used directly by `/api/v1/kb/search` for citation-only lookups, independent of the agent graph) does hybrid retrieval + hybrid reranking (`services/retrieval_utils.py`) + lightweight regex-based entity expansion into the graph — this is a simpler, non-agentic retrieval path kept separate from the LangGraph flow.
+`rag_engine.build_context` (used directly by `/api/v1/kb/search` for citation-only lookups, independent of the agent graph) does hybrid retrieval + reranking + lightweight regex-based entity expansion into the graph — this is a simpler, non-agentic retrieval path kept separate from the LangGraph flow.
+
+### Reranking
+Both retrieval paths (`vector_tool` and `rag_engine.build_context`) rerank the oversampled hybrid-search candidates with a local cross-encoder (`services/reranker.py`, lazy-loaded via `sentence-transformers`, default model `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` — multilingual, CPU-friendly, configurable via `RERANKER_MODEL`). If the model fails to load or `ENABLE_RERANKER=false`, both call sites fall back to the cheaper lexical rerank in `services/retrieval_utils.py` (`rerank_hybrid`, Jaccard token overlap blended with vector score).
 
 ### Config
 All tunables are centralized in `backend/app/core/config.py` (`Settings`, a `pydantic_settings.BaseSettings` reading `.env`) and mirrored as environment variables for each service in `docker-compose.yml`. When adding a new tunable, add it in both places.

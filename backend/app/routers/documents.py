@@ -1,12 +1,13 @@
 import logging
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.auth import get_current_user, get_current_active_admin
 from app.models.models import User, Document, Chunk, IngestionJob
-from app.models.schemas import DocumentOut, DocumentList, IngestionJobList
+from app.models.schemas import DocumentCategoryList, DocumentOut, DocumentList, IngestionJobList
 from app.services.ingestion import SCHEDULABLE_STATUSES, create_document
 from app.tasks.ingestion import ingest_document_task
 from app.services.storage import storage
@@ -30,9 +31,17 @@ SUPPORTED_CONTENT_TYPES = {
 }
 
 
+@router.get("/categories", response_model=DocumentCategoryList)
+async def list_document_categories(current_user: User = Depends(get_current_user)):
+    categories = [c.strip() for c in get_settings().document_categories.split(",") if c.strip()]
+    return DocumentCategoryList(categories=categories)
+
+
 @router.post("/upload", response_model=DocumentOut)
 async def upload_document(
     file: UploadFile = File(...),
+    description: str | None = Form(default=None),
+    category: str | None = Form(default=None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -66,6 +75,8 @@ async def upload_document(
             content_type=file.content_type,
             data=data,
             user_id=str(current_user.id),
+            description=(description or "").strip()[:2000] or None,
+            category=(category or "").strip()[:128] or None,
         )
     except HTTPException:
         raise

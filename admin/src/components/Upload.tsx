@@ -1,16 +1,28 @@
-import { useState, useCallback } from 'react'
-import { uploadDocument } from '../lib/api'
+import { useState, useCallback, useEffect } from 'react'
+import { fetchDocumentCategories, uploadDocument } from '../lib/api'
 
 interface Props {
   onUploadSuccess: () => void
   onTokenInvalid: () => void
 }
 
+const OTHER_CATEGORY = 'Altro'
+
 export default function Upload({ onUploadSuccess, onTokenInvalid }: Props) {
   const [file, setFile] = useState<File | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [status, setStatus] = useState<'idle' | 'uploading' | 'success' | 'error'>('idle')
   const [message, setMessage] = useState('')
+  const [description, setDescription] = useState('')
+  const [categories, setCategories] = useState<string[]>([])
+  const [selectedCategory, setSelectedCategory] = useState('')
+  const [customCategory, setCustomCategory] = useState('')
+
+  useEffect(() => {
+    fetchDocumentCategories()
+      .then(setCategories)
+      .catch(() => setCategories([]))
+  }, [])
 
   const handleFile = (selected: File | null) => {
     if (!selected) return
@@ -35,15 +47,20 @@ export default function Upload({ onUploadSuccess, onTokenInvalid }: Props) {
     setDragOver(false)
   }, [])
 
+  const resolvedCategory = selectedCategory === OTHER_CATEGORY ? customCategory.trim() : selectedCategory
+
   const submit = async () => {
     if (!file) return
     setStatus('uploading')
     setMessage('Caricamento in corso...')
     try {
-      await uploadDocument(file)
+      await uploadDocument(file, description.trim() || undefined, resolvedCategory || undefined)
       setStatus('success')
       setMessage(`"${file.name}" caricato. L'ingestion è in corso in automatico.`)
       setFile(null)
+      setDescription('')
+      setSelectedCategory('')
+      setCustomCategory('')
       onUploadSuccess()
     } catch (err: any) {
       setStatus('error')
@@ -84,6 +101,46 @@ export default function Upload({ onUploadSuccess, onTokenInvalid }: Props) {
             Selezionato: <span className="font-medium">{file.name}</span> ({(file.size / 1024).toFixed(1)} KB)
           </div>
         )}
+      </div>
+
+      <div className="mt-4 grid md:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium mb-1 text-slate-700">
+            Categoria <span className="text-slate-400 font-normal">(opzionale)</span>
+          </label>
+          <select
+            value={selectedCategory}
+            onChange={(e) => setSelectedCategory(e.target.value)}
+            className="w-full border border-slate-300 rounded px-3 py-2 text-sm"
+          >
+            <option value="">Nessuna categoria</option>
+            {categories.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          {selectedCategory === OTHER_CATEGORY && (
+            <input
+              type="text"
+              value={customCategory}
+              onChange={(e) => setCustomCategory(e.target.value)}
+              placeholder="Specifica la categoria"
+              className="mt-2 w-full border border-slate-300 rounded px-3 py-2 text-sm"
+            />
+          )}
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1 text-slate-700">
+            Descrizione <span className="text-slate-400 font-normal">(opzionale)</span>
+          </label>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Poche righe su cosa contiene questo documento: aiuta la ricerca a capire il contesto."
+            className="w-full border border-slate-300 rounded px-3 py-2 text-sm h-[74px] resize-none"
+          />
+        </div>
       </div>
 
       <button
