@@ -259,9 +259,9 @@ services:
     environment:
       - MCP_API_KEY=${MCP_API_KEY:-mcpsecret}
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      - "${HOST_IP:-0.0.0.0}:80:80"
+      - "${HOST_IP:-0.0.0.0}:443:443"
+      - "${HOST_IP:-0.0.0.0}:443:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./data/caddy/data:/data

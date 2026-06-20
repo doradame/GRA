@@ -29,6 +29,11 @@ run_input() {
     log_info "  Chat Admin: $DOMAIN_CHAT_ADMIN"
     log_info "  MCP:        $DOMAIN_MCP"
 
+    local host_ip_input
+    read -rp "IP su cui bindare le porte pubbliche (80/443) [0.0.0.0]: " host_ip_input
+    HOST_IP=${host_ip_input:-0.0.0.0}
+    log_info "IP bind porte:       $HOST_IP"
+
     while true; do
         ask_required "OpenAI API Key" "OPENAI_API_KEY"
         if is_valid_openai_key "$OPENAI_API_KEY"; then break; fi
@@ -72,6 +77,7 @@ run_input() {
     log_info "  LibreChat:         $DOMAIN_CHAT"
     log_info "  LibreChat Admin:   $DOMAIN_CHAT_ADMIN"
     log_info "  MCP Server:        $DOMAIN_MCP"
+    log_info "IP bind porte:       $HOST_IP"
     log_info "OpenAI API Key:      fornita (${#OPENAI_API_KEY} caratteri)"
     log_info "Resend API Key:      fornita (${#RESEND_API_KEY} caratteri)"
     log_info "Email mittente:      $EMAIL_FROM_NAME <$EMAIL_FROM>"

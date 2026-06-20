@@ -85,6 +85,10 @@ CREDS_IV=${CREDS_IV}
 
 LIBRECHAT_BACKEND_API_KEY=${LIBRECHAT_BACKEND_API_KEY}
 MEILI_MASTER_KEY=${MEILI_MASTER_KEY}
+
+# Network binding
+# IP address on which Docker binds the public ports exposed by Caddy (80/443).
+HOST_IP=${HOST_IP:-0.0.0.0}
 CONFIGEOF
 }
 
