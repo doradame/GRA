@@ -19,40 +19,29 @@ L’assistente diventa esperto della knowledge base che gli viene fornita: manua
 - OpenAI API Key (consigliato per embedding e risposte LLM)
 - Un dominio puntato al server (es. `matamune.4nk.eu`)
 
-## Avvio rapido
+## Avvio rapido (VPS)
 
-1. Copia e configura le variabili d'ambiente:
-
-```bash
-cp .env.example .env
-# Modifica OPENAI_API_KEY, SECRET_KEY, NEO4J_PASSWORD, MCP_API_KEY, MEILI_MASTER_KEY
-```
-
-2. Crea le directory per i dati persistenti:
+1. Assicurati di avere Docker e Docker Compose installati su una VPS Ubuntu 22.04/24.04 LTS.
+2. Esegui l'installer interattivo:
 
 ```bash
-mkdir -p data/{postgres,neo4j/{data,logs},qdrant,minio,caddy/{data,config},mongo,meilisearch,documents}
+curl -fsSL https://raw.githubusercontent.com/graph-rag-assistant/graph-rag-assistant/main/scripts/install.sh | bash
 ```
 
-3. Avvia tutto lo stack:
+Oppure, se hai gia' il repository sul server:
 
 ```bash
-docker compose up -d
+bash scripts/install.sh
 ```
 
-4. Crea un utente tramite l'API:
+3. L'installer ti chiedera':
+   - dominio root
+   - OpenAI API Key
+   - Resend API Key
+   - indirizzo mittente email
+   - credenziali admin backend e LibreChat
 
-```bash
-curl -X POST https://api.matamune.4nk.eu/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@example.com","password":"secret"}'
-```
-
-5. Accedi al pannello admin: https://admin.matamune.4nk.eu
-
-6. Carica i tuoi documenti PDF/DOCX/TXT/HTML dal pannello admin. L’ingestion parte automaticamente.
-
-7. Accedi a LibreChat: https://chat.matamune.4nk.eu
+4. Al termine accedi al pannello admin: `https://admin.<tuo-dominio>.com`
 
 ## URL esposti
 

@@ -1,0 +1,4 @@
+# ShellCheck configuration for the VPS installer scripts.
+# Some warnings are disabled because they are false positives in this
+# modular sourcing setup (variables are used across sourced files).
+disable=SC1090,SC1091,SC2034,SC2329
