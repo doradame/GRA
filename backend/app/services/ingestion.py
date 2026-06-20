@@ -16,7 +16,7 @@ from app.services.chunking import chunk_text
 from app.services.embeddings import embed_texts
 from app.services.vector_store import vector_store
 from app.services.graph_store import graph_store
-from app.services.extraction import extract_relations
+from app.services.extraction import extract_relations_batch
 from app.services.gliner_extraction import extract_entities as gliner_extract_entities
 from app.services.sparse_vectors import tokenize_sparse, weighted_sparse_vector
 from app.services.sparse_corpus_stats import (
@@ -533,54 +533,55 @@ async def process_document(
                 progress_step = max(1, len(chunks) // 20)
                 # GLiNER ed estrazione relazioni LLM girano su TUTTI i chunk: niente cap per costo,
                 # altrimenti la maggior parte delle entità di documenti lunghi resta isolata nel grafo.
+                # Il loop e spezzato in 3 fasi: la fase 2 (relazioni LLM, la piu costosa) gira in
+                # concorrenza, separata dalle scritture Neo4j (seriali, fasi 1 e 3).
 
-                for idx, chunk_text_content in enumerate(chunks):
-                    text_hash = _hash_text(chunk_text_content)
-                    chunk_id = _stable_uuid("chunk", document_id, idx, text_hash)
-
-                    logger.debug("[ingestion] Adding chunk %s/%s to graph for document_id=%s", idx + 1, len(chunks), document_id)
+                # Fase 1 (seriale): registra ogni Chunk nel grafo ed estrai le entita con GLiNER.
+                graph_items = []  # (chunk_id, chunk_text_content, entities)
+                for idx, chunk_text_content in enumerate(chunk_texts):
+                    chunk_id = _stable_uuid("chunk", document_id, idx, _hash_text(chunk_text_content))
+                    logger.debug("[ingestion] Adding chunk %s/%s to graph for document_id=%s", idx + 1, len(chunk_texts), document_id)
                     graph_store.add_chunk(chunk_id, document_id, chunk_text_content, idx, user_id=user_id)
-
-                    # 1. Estrazione entità con GLiNER su TUTTI i chunk.
-                    logger.debug("[ingestion] Extracting entities with GLiNER for chunk %s/%s of document_id=%s", idx + 1, len(chunks), document_id)
                     try:
                         entities = gliner_extract_entities(chunk_text_content)
                     except Exception as extraction_error:
                         logger.warning(
                             "[ingestion] GLiNER entity extraction failed for chunk %s/%s of document_id=%s: %s",
                             idx + 1,
-                            len(chunks),
+                            len(chunk_texts),
                             document_id,
                             extraction_error,
                         )
                         entities = []
+                    job.entity_count = (job.entity_count or 0) + len(entities)
+                    graph_items.append((chunk_id, chunk_text_content, entities))
 
-                    # 2. Estrazione relazioni con LLM per ogni chunk (extract_relations salta da sé
-                    # i chunk con meno di 2 entità, quindi qui non serve un cap manuale).
-                    logger.debug("[ingestion] Extracting relations with LLM for chunk %s/%s of document_id=%s", idx + 1, len(chunks), document_id)
-                    try:
-                        relations = await extract_relations(chunk_text_content, entities)
-                    except Exception as extraction_error:
-                        logger.warning(
-                            "[ingestion] Relation extraction failed for chunk %s/%s of document_id=%s: %s",
-                            idx + 1,
-                            len(chunks),
-                            document_id,
-                            extraction_error,
-                        )
-                        relations = []
+                # Fase 2 (concorrente): estrazione relazioni LLM in parallelo (semaphore + client
+                # condiviso, vedi extraction.extract_relations_batch). Un chunk con meno di 2
+                # entita o con errore LLM contribuisce con [] senza abortire il batch.
+                logger.info(
+                    "[ingestion] Extracting relations for %s chunks (concurrency=%s) of document_id=%s",
+                    len(graph_items),
+                    settings.extraction_concurrency,
+                    document_id,
+                )
+                relations_per_chunk = await extract_relations_batch(
+                    [(chunk_text_content, entities) for (_cid, chunk_text_content, entities) in graph_items]
+                )
+                for relations in relations_per_chunk:
+                    job.relation_count = (job.relation_count or 0) + len(relations)
 
+                # Fase 3 (seriale): scrivi entita+relazioni nel grafo, aggiorna costi/progress.
+                for idx, (chunk_id, chunk_text_content, entities) in enumerate(graph_items):
+                    relations = relations_per_chunk[idx]
                     logger.debug(
-                        "[ingestion] Chunk %s/%s extracted %s entities and %s relations for document_id=%s",
+                        "[ingestion] Chunk %s/%s wrote %s entities and %s relations for document_id=%s",
                         idx + 1,
-                        len(chunks),
+                        len(graph_items),
                         len(entities),
                         len(relations),
                         document_id,
                     )
-                    job.entity_count = (job.entity_count or 0) + len(entities)
-                    job.relation_count = (job.relation_count or 0) + len(relations)
-
                     rel_input_tokens = _token_count(chunk_text_content, settings.openai_model)
                     rel_output_tokens = _count_tokens_for_model([str(r) for r in relations], settings.openai_model)
                     job.input_tokens = (job.input_tokens or 0) + rel_input_tokens
@@ -590,8 +591,8 @@ async def process_document(
                     )
 
                     graph_store.add_entities_and_relations(chunk_id, entities, relations)
-                    if (idx + 1) % progress_step == 0 or idx + 1 == len(chunks):
-                        graph_progress = 80 + int(((idx + 1) / len(chunks)) * 18)
+                    if (idx + 1) % progress_step == 0 or idx + 1 == len(graph_items):
+                        graph_progress = 80 + int(((idx + 1) / len(graph_items)) * 18)
                         await _set_document_status(db, doc, STATUS_GRAPH_INDEXING, job=job, progress=graph_progress)
 
                 job.completed_graph_indexing_at = datetime.utcnow()

@@ -18,6 +18,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 from app.core.config import get_settings
+from app.core.retry import retry_sync
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -85,8 +86,24 @@ class VectorStore:
 
         logger.info("[vector] Upserting %s points to collection %s", len(points), self.collection)
 
+        # Retry solo su errori transitori: 5xx / 429 del server o errori di rete. I 4xx
+        # client (dati malformati) propagano subito (vedi core/retry.should_retry).
+        def _is_transient(exc: BaseException) -> bool:
+            if isinstance(exc, ConnectionError):
+                return True
+            code = getattr(exc, "status_code", None)
+            return code is not None and (code >= 500 or code == 429)
+
+        def _upsert(pts: List[PointStruct]) -> None:
+            retry_sync(
+                lambda: self.client.upsert(collection_name=self.collection, points=pts),
+                retry_on=(UnexpectedResponse, ConnectionError),
+                should_retry=_is_transient,
+                what="qdrant upsert",
+            )
+
         if batch_size <= 0:
-            self.client.upsert(collection_name=self.collection, points=points)
+            _upsert(points)
         else:
             for i in range(0, len(points), batch_size):
                 batch = points[i : i + batch_size]
@@ -96,7 +113,7 @@ class VectorStore:
                     i + len(batch),
                     len(points),
                 )
-                self.client.upsert(collection_name=self.collection, points=batch)
+                _upsert(batch)
 
         logger.info("[vector] Upsert complete")
 

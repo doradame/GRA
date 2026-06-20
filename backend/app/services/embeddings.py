@@ -3,6 +3,7 @@ import hashlib
 import math
 from openai import AsyncOpenAI, BadRequestError
 from app.core.config import get_settings
+from app.core.retry import openai_transient, retry_async
 from app.services.api_usage import increment_embeddings_calls
 
 settings = get_settings()
@@ -58,10 +59,19 @@ async def _embed_batch(client: AsyncOpenAI, texts: List[str]) -> List[List[float
         kwargs["dimensions"] = settings.embedding_dimensions
 
     try:
-        response = await client.embeddings.create(**kwargs)
+        response = await retry_async(
+            lambda: client.embeddings.create(**kwargs),
+            retry_on=openai_transient(),
+            what="embeddings",
+        )
     except BadRequestError:
+        # Il modello/payload non supporta `dimensions`: retry senza (errore logico, non transitorio).
         kwargs.pop("dimensions", None)
-        response = await client.embeddings.create(**kwargs)
+        response = await retry_async(
+            lambda: client.embeddings.create(**kwargs),
+            retry_on=openai_transient(),
+            what="embeddings",
+        )
 
     tokens = 0
     if response.usage:

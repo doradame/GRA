@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     community_summary_model: str = "gpt-5.4-nano"
     community_summary_max_entities: int = 50
 
+    # Estrazione relazioni (graph indexing): una chiamata LLM per chunk, parallelizzata
+    # con un semaphore (come contextual_retrieval_concurrency).
+    extraction_concurrency: int = 4
+    # Retry con backoff esponenziale per chiamate di rete transitorie (LLM, embeddings,
+    # Qdrant upsert) — vedi core/retry.py.
+    api_request_max_retries: int = 3
+
     class Config:
         env_file = ".env"
         extra = "ignore"

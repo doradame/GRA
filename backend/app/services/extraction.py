@@ -1,9 +1,11 @@
+import asyncio
 import json
 import hashlib
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Tuple
 import logging
 from openai import AsyncOpenAI, BadRequestError
 from app.core.config import get_settings
+from app.core.retry import openai_transient, retry_async
 from app.services.api_usage import increment_extraction_calls
 
 logger = logging.getLogger(__name__)
@@ -223,18 +225,57 @@ def _normalize_extraction(data: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]
 
 
 async def extract_relations(chunk_text: str, entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Estrae solo le relazioni tra entità già identificate (GLiNER) usando un LLM.
+    """Estrae le relazioni per un singolo chunk (crea e chiude il proprio client OpenAI).
 
-    Args:
-        chunk_text: il testo del chunk.
-        entities: lista di entità nel formato {"id": str, "name": str, "type": str}.
-
-    Returns:
-        Lista di relazioni nel formato {"source_id": str, "target_id": str, "type": str, "properties": dict}.
+    Mantenuto per compatibilita; il path di ingestion usa `extract_relations_batch`
+    (concorrente, client condiviso). In caso di fallimento LLM ritorna [].
     """
     if not settings.openai_api_key or settings.openai_api_key.startswith("sk-test"):
         return []
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    try:
+        return await _extract_relations_with_client(client, chunk_text, entities)
+    finally:
+        await client.close()
 
+
+async def extract_relations_batch(
+    items: List[Tuple[str, List[Dict[str, Any]]]],
+) -> List[List[Dict[str, Any]]]:
+    """Estrae le relazioni per tutti i chunk in concorrenza (client condiviso + semaphore).
+
+    `items` e una lista di (chunk_text, entities); ritorna le relazioni di ciascuno nello
+    stesso ordine. Una chiamata LLM per chunk con concorrenza limitata da
+    settings.extraction_concurrency (stesso pattern di contextual_chunking). I chunk con
+    meno di 2 entita, in modalita test, o su errore LLM persistente contribuiscono con []
+    senza abortire il batch.
+    """
+    if not settings.openai_api_key or settings.openai_api_key.startswith("sk-test"):
+        return [[] for _ in items]
+
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    semaphore = asyncio.Semaphore(max(1, settings.extraction_concurrency))
+    try:
+
+        async def _one(chunk_text: str, entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            async with semaphore:
+                return await _extract_relations_with_client(client, chunk_text, entities)
+
+        return await asyncio.gather(*[_one(ct, ents) for ct, ents in items])
+    finally:
+        await client.close()
+
+
+async def _extract_relations_with_client(
+    client: AsyncOpenAI,
+    chunk_text: str,
+    entities: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Estrae le relazioni per un chunk usando un client OpenAI gia aperto (condivisibile).
+
+    Degradazione resiliente: su errore LLM (anche dopo i retry) ritorna [] invece di
+    propagare, cosi un chunk problematico non abortisce l'intera ingestion.
+    """
     if len(entities) < 2:
         logger.debug("[extraction] Not enough entities (%s) to extract relations", len(entities))
         return []
@@ -246,27 +287,32 @@ async def extract_relations(chunk_text: str, entities: List[Dict[str, Any]]) -> 
     )
     prompt = RELATION_PROMPT.replace("{entities}", entities_text).replace("{text}", chunk_text[:8000])
 
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
     try:
-        response = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[
-                {"role": "system", "content": "Estrai solo relazioni verificabili dal testo."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            response_format={"type": "json_object"},
+        response = await retry_async(
+            lambda: client.chat.completions.create(
+                model=settings.openai_model,
+                messages=[
+                    {"role": "system", "content": "Estrai solo relazioni verificabili dal testo."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                response_format={"type": "json_object"},
+            ),
+            retry_on=openai_transient(),
+            what="relation extraction",
         )
-        tokens = 0
-        if response.usage:
-            tokens = response.usage.total_tokens or 0
-        increment_extraction_calls(tokens=tokens)
-        data = _safe_parse_json(response.choices[0].message.content)
-        if data is None:
-            return []
-        return _normalize_relations(data, valid_ids)
-    finally:
-        await client.close()
+    except Exception as exc:
+        logger.warning("[extraction] Relation extraction LLM call failed after retries: %s", exc)
+        return []
+
+    tokens = 0
+    if response.usage:
+        tokens = response.usage.total_tokens or 0
+    increment_extraction_calls(tokens=tokens)
+    data = _safe_parse_json(response.choices[0].message.content)
+    if data is None:
+        return []
+    return _normalize_relations(data, valid_ids)
 
 
 async def extract_entities_relations(text: str) -> Dict[str, List[Dict[str, Any]]]:
