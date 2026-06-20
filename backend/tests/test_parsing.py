@@ -148,3 +148,22 @@ def test_render_markdown_table_escapes_pipes_and_skips_blank_rows():
 def test_render_markdown_table_returns_empty_string_for_no_content():
     assert _render_markdown_table([]) == ""
     assert _render_markdown_table([[None, None], ["", ""]]) == ""
+
+
+def test_extract_document_separates_html_blocks_for_chunking():
+    html = b"<html><body><h1>Title</h1><p>First paragraph here.</p><p>Second paragraph here.</p></body></html>"
+    result = extract_document("page.html", html)
+
+    assert result.parser == "beautifulsoup"
+    # I blocchi sono separati da "\n\n" cosi il chunker (split su "\n\n") li vede distinti
+    # invece dell'intero documento come un unico paragrafo gigante.
+    parts = [p for p in result.text.split("\n\n") if p.strip()]
+    assert parts == ["Title", "First paragraph here.", "Second paragraph here."]
+
+
+def test_extract_document_keeps_html_inline_text_together():
+    # Il testo inline (b, i, span) non deve essere spezzato in paragrafi separati.
+    html = b"<p>Hello <b>bold</b> and <i>italic</i> world</p>"
+    result = extract_document("page.html", html)
+
+    assert "Hello bold and italic world" in result.text

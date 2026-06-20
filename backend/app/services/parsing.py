@@ -1,11 +1,12 @@
 import io
 import logging
+import re
 from dataclasses import dataclass
 from typing import List
 import magic
 import pdfplumber
 from docx import Document as DocxDocument
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +61,10 @@ def extract_document(
     ) or lower_name.endswith((".docx", ".doc")):
         text = _extract_docx(data)
         return ParsingResult(text=text, mime_type=mime, parser="python-docx")
-    if mime.startswith("text/") or lower_name.endswith((".txt", ".md", ".csv", ".json")):
-        return ParsingResult(text=data.decode("utf-8", errors="ignore"), mime_type=mime, parser="text")
     if mime == "text/html" or lower_name.endswith((".html", ".htm")):
         return ParsingResult(text=_extract_html(data), mime_type=mime, parser="beautifulsoup")
+    if mime.startswith("text/") or lower_name.endswith((".txt", ".md", ".csv", ".json")):
+        return ParsingResult(text=data.decode("utf-8", errors="ignore"), mime_type=mime, parser="text")
 
     # Fallback: prova come testo
     return ParsingResult(text=data.decode("utf-8", errors="ignore"), mime_type=mime, parser="text_fallback")
@@ -162,8 +163,34 @@ def _extract_docx(data: bytes) -> str:
     return "\n\n".join(parts)
 
 
+# Tag HTML a livello blocco: il loro contenuto e un'unita di testo separata (un paragrafo
+# per il chunker, che splitta su "\n\n").
+_HTML_BLOCK_TAGS = [
+    "address", "article", "aside", "blockquote", "dd", "div", "dl", "dt",
+    "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3",
+    "h4", "h5", "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre",
+    "section", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
+]
+
+
 def _extract_html(data: bytes) -> str:
     soup = BeautifulSoup(data, "html.parser")
     for script in soup(["script", "style"]):
         script.decompose()
-    return soup.get_text(separator="\n")
+    # Inserisci un separatore di paragrafo ("\n\n") prima di ogni elemento blocco, cosi
+    # il chunker (che splitta su "\n\n") vede i blocchi HTML come paragrafi distinti
+    # invece dell'intero documento come un unico paragrafo gigante. Il testo inline
+    # (b, span, i, ...) resta attaccato: separano solo i blocchi strutturali.
+    for tag in soup.find_all(_HTML_BLOCK_TAGS):
+        tag.insert_before(NavigableString("\n\n"))
+    text = soup.get_text(separator="")
+    return _normalize_html_whitespace(text)
+
+
+def _normalize_html_whitespace(text: str) -> str:
+    """Collassa il whitespace residuo dell'estrazione HTML: spazi multipli -> 1,
+    newline ripetuti (3+) -> "\n\n", strip degli estremi."""
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
