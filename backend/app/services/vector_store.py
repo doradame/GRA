@@ -16,6 +16,7 @@ from qdrant_client.models import (
     FieldCondition,
     MatchValue,
     VectorParams,
+    PayloadSchemaType,
 )
 from app.core.config import get_settings
 from app.core.retry import retry_sync
@@ -68,6 +69,10 @@ class VectorStore:
                 self._warn_if_sparse_collection_missing()
             logger.debug("[vector] Qdrant collection already exists: %s", self.collection)
 
+        # Indici sui campi filtrati a query-time (user_id, document_id): senza di questi i
+        # filtri multi-tenant sono full-scan sulle collection grandi.
+        self._ensure_payload_indexes()
+
     def _warn_if_sparse_collection_missing(self):
         info = self._client.get_collection(self.collection)
         sparse_vectors = getattr(getattr(info, "config", None), "params", None)
@@ -79,6 +84,33 @@ class VectorStore:
                 self.collection,
                 settings.qdrant_sparse_vector_name,
             )
+
+    def _ensure_payload_indexes(self):
+        """Crea indici di payload su user_id/document_id se mancanti (filtri query-time).
+
+        Idempotente: legge lo schema esistente e crea solo i campi non ancora indicizzati,
+        cosi funziona sia su collection nuove sia gia esistenti. Fallimenti (es. versione
+        Qdrant senza payload index) sono warn-only: l'indice e un'ottimizzazione, non un
+        requisito di correttezza.
+        """
+        try:
+            info = self._client.get_collection(self.collection)
+            existing = set((info.payload_schema or {}).keys())
+        except Exception as exc:
+            logger.warning("[vector] Cannot read payload schema for index check: %s", exc)
+            return
+        for field in ("user_id", "document_id"):
+            if field in existing:
+                continue
+            try:
+                self._client.create_payload_index(
+                    collection_name=self.collection,
+                    field_name=field,
+                    field_schema=PayloadSchemaType.KEYWORD,
+                )
+                logger.info("[vector] Created payload index on %s.%s", self.collection, field)
+            except Exception as exc:
+                logger.warning("[vector] Could not create payload index on %s: %s", field, exc)
 
     def upsert(self, points: List[PointStruct], batch_size: Optional[int] = None):
         if batch_size is None:

@@ -1,20 +1,13 @@
-import hashlib
 import logging
 from typing import Any
 
 from app.core.config import get_settings
+from app.services.entity_ids import canonical_entity_id
 
 logger = logging.getLogger(__name__)
 
 # Cache lazy del modello GLiNER all'interno del processo worker.
 _model = None
-
-
-def _canonical_entity_id(name: str, entity_type: str) -> str:
-    """ID canonico stabile per un'entità (stessa logica di extraction.py)."""
-    normalized_name = " ".join(name.casefold().strip().split())
-    normalized_type = " ".join(entity_type.casefold().strip().split()) or "unknown"
-    return hashlib.sha256(f"{normalized_type}:{normalized_name}".encode("utf-8")).hexdigest()[:32]
 
 
 def _get_model() -> Any:
@@ -83,7 +76,7 @@ def extract_entities(
         if not name:
             continue
 
-        entity_id = _canonical_entity_id(name, entity_type)
+        entity_id = canonical_entity_id(name, entity_type)
         if entity_id in seen:
             continue
         seen.add(entity_id)

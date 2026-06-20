@@ -1,23 +1,17 @@
 from typing import List, Dict, Any
 import logging
 import re
-import hashlib
 import time
+from collections import defaultdict
 from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable
 from app.core.config import get_settings
+from app.services.entity_ids import canonical_entity_id
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
 DEFAULT_RELATION_TYPE = "RELATED_TO"
-
-
-def _normalize_entity_key(name: str, entity_type: str) -> str:
-    normalized_name = " ".join(name.casefold().strip().split())
-    normalized_type = " ".join(entity_type.casefold().strip().split()) or "unknown"
-    digest = hashlib.sha256(f"{normalized_type}:{normalized_name}".encode("utf-8")).hexdigest()
-    return digest[:32]
 
 
 def _sanitize_relation_type(value: str) -> str:
@@ -117,39 +111,58 @@ class GraphStore:
         entities: List[Dict[str, Any]],
         relations: List[Dict[str, Any]],
     ):
+        # Batched: una query UNWIND per tutte le entita (invece di N session.run) e una
+        # query per tipo di relazione. e.name/e.type sono first-seen via coalesce
+        # (deterministico): il primo chunk che menziona l'entita fissa nome/tipo, invece
+        # del non-deterministico "ultima scrittura vince" di prima.
+        ent_rows = []
+        for entity in entities:
+            name = str(entity.get("name", "")).strip()
+            if not name:
+                continue
+            entity_type = str(entity.get("type", "Unknown")).strip() or "Unknown"
+            ent_rows.append({
+                "id": str(entity.get("id") or canonical_entity_id(name, entity_type)),
+                "name": name,
+                "type": entity_type,
+                "normalized_name": " ".join(name.casefold().strip().split()),
+            })
         with self.driver.session() as session:
-            for entity in entities:
-                name = str(entity.get("name", "")).strip()
-                entity_type = str(entity.get("type", "Unknown")).strip() or "Unknown"
-                if not name:
-                    continue
-                entity_id = str(entity.get("id") or _normalize_entity_key(name, entity_type))
+            if ent_rows:
                 session.run(
                     """
-                    MERGE (e:Entity {id: $id})
-                    SET e.name = $name, e.type = $type, e.normalized_name = $normalized_name
+                    UNWIND $rows AS row
+                    MERGE (e:Entity {id: row.id})
+                    SET e.name = coalesce(e.name, row.name),
+                        e.type = coalesce(e.type, row.type),
+                        e.normalized_name = row.normalized_name
                     WITH e
                     MATCH (c:Chunk {id: $chunk_id})
                     MERGE (c)-[:MENTIONS]->(e)
                     """,
-                    id=entity_id,
-                    name=name,
-                    type=entity_type,
-                    normalized_name=" ".join(name.casefold().strip().split()),
+                    rows=ent_rows,
                     chunk_id=chunk_id,
                 )
+            # Il tipo di relazione e parte della sintassi Cypher (non parametrizzabile),
+            # quindi una query UNWIND per tipo distinto invece di una per relazione.
+            by_type: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
             for rel in relations:
                 rel_type = _sanitize_relation_type(str(rel.get("type", DEFAULT_RELATION_TYPE)))
+                by_type[rel_type].append({
+                    "source_id": rel.get("source_id"),
+                    "target_id": rel.get("target_id"),
+                    "props": rel.get("properties", {}) or {},
+                })
+            for rel_type, rows in by_type.items():
                 session.run(
                     f"""
-                    MATCH (s:Entity {{id: $source_id}})
-                    MATCH (t:Entity {{id: $target_id}})
+                    UNWIND $rows AS row
+                    MATCH (s:Entity {{id: row.source_id}})
+                    MATCH (t:Entity {{id: row.target_id}})
                     MERGE (s)-[r:{rel_type}]->(t)
-                    SET r += $props
+                    SET r += row.props
                     """,
-                    source_id=rel.get("source_id"),
-                    target_id=rel.get("target_id"),
-                    props=rel.get("properties", {}),
+                    rows=rows,
                 )
 
     @staticmethod

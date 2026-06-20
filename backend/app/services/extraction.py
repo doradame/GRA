@@ -1,12 +1,12 @@
 import asyncio
 import json
-import hashlib
 from typing import Any, Dict, List, Tuple
 import logging
 from openai import AsyncOpenAI, BadRequestError
 from app.core.config import get_settings
 from app.core.retry import openai_transient, retry_async
 from app.services.api_usage import increment_extraction_calls
+from app.services.entity_ids import canonical_entity_id
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -89,12 +89,6 @@ Testo:
 Restituisci solo JSON valido con questa forma esatta:
 {"relations":[{"source_id":"...","target_id":"...","type":"...","properties":{}}]}
 """
-
-
-def _canonical_entity_id(name: str, entity_type: str) -> str:
-    normalized_name = " ".join(name.casefold().strip().split())
-    normalized_type = " ".join(entity_type.casefold().strip().split()) or "unknown"
-    return hashlib.sha256(f"{normalized_type}:{normalized_name}".encode("utf-8")).hexdigest()[:32]
 
 
 def _safe_parse_json(text: str) -> Dict[str, Any] | None:
@@ -181,7 +175,7 @@ def _normalize_extraction(data: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]
         entity_type = str(raw.get("type", "Unknown")).strip() or "Unknown"
         if not name:
             continue
-        canonical_id = _canonical_entity_id(name, entity_type)
+        canonical_id = canonical_entity_id(name, entity_type)
         raw_id = str(raw.get("id", canonical_id))
         id_map[raw_id] = canonical_id
         if canonical_id in seen_entities:
