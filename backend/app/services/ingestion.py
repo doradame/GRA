@@ -297,6 +297,53 @@ async def create_document(
     return doc
 
 
+async def _handle_ingestion_error(db, document_id, doc, job, exc) -> bool:
+    """Gestisce il fallimento di process_document.
+
+    Ritorna True se l'errore va propagato (Celery fara' retry), False se il documento e'
+    stato cancellato concorrentemente e non c'e piu nulla da fare (uscita pulita, nessun
+    retry, nessun tentativo di resuscitare righe sparite).
+
+    Quando il documento viene cancellato mentre l'ingestion gira, la DELETE (servita dal
+    backend, processo separato dal worker che invece e' -c 1) cascade-rimuove documents e
+    ingestion_jobs (FK ondelete=CASCADE su entrambi): la sessione ORM del worker va stale,
+    il prossimo autoflush emette `UPDATE ingestion_jobs ... -> 0 righe` -> StaleDataError,
+    e merge+commit non possono marcare lo status -> ObjectDeletedError. Verifichiamo
+    l'esistenza con una query fresca post-rollback: se il doc e sparito, abortiamo senza
+    rumore. In tutti gli altri casi (doc ancora presente) ripristiniamo il comportamento
+    storico: cleanup artefatti + mark error + propagate.
+    """
+    await db.rollback()
+    existing = (
+        await db.execute(select(Document).where(Document.id == document_id))
+    ).scalar_one_or_none()
+    if existing is None:
+        logger.info(
+            "[ingestion] Document %s was deleted during ingestion; aborting cleanly",
+            document_id,
+        )
+        return False
+
+    await _cleanup_document_artifacts(db, document_id)
+    try:
+        merged = await db.merge(doc)
+        merged_job = await db.merge(job)
+        merged.status = STATUS_ERROR
+        merged.error_message = str(exc)[:4000]
+        merged_job.status = STATUS_ERROR
+        merged_job.phase = STATUS_ERROR
+        merged_job.progress = 100
+        merged_job.error_code = type(exc).__name__
+        merged_job.error_message = str(exc)[:4000]
+        merged_job.completed_at = datetime.utcnow()
+        await db.commit()
+        await db.refresh(merged)
+        logger.info("[ingestion] Marked document_id=%s as error", document_id)
+    except Exception:
+        logger.exception("[ingestion] Could not update error status for document_id=%s", document_id)
+    return True
+
+
 async def process_document(
     document_id: str,
     filename: str,
@@ -602,25 +649,12 @@ async def process_document(
 
             except Exception as e:
                 logger.exception("[ingestion] Processing failed for document_id=%s: %s", document_id, e)
-                await db.rollback()
-                await _cleanup_document_artifacts(db, document_id)
-                try:
-                    merged = await db.merge(doc)
-                    merged_job = await db.merge(job)
-                    merged.status = STATUS_ERROR
-                    merged.error_message = str(e)[:4000]
-                    merged_job.status = STATUS_ERROR
-                    merged_job.phase = STATUS_ERROR
-                    merged_job.progress = 100
-                    merged_job.error_code = type(e).__name__
-                    merged_job.error_message = str(e)[:4000]
-                    merged_job.completed_at = datetime.utcnow()
-                    await db.commit()
-                    await db.refresh(merged)
-                    logger.info("[ingestion] Marked document_id=%s as error", document_id)
-                except Exception:
-                    logger.exception("[ingestion] Could not update error status for document_id=%s", document_id)
-                raise
+                # _handle_ingestion_error ritorna False se il documento e stato cancellato
+                # concorrentemente: in quel caso usciamo pulitamente senza re-raise (nessun
+                # retry Celery su un documento che non esiste piu). Negli altri casi
+                # propaga come prima.
+                if await _handle_ingestion_error(db, document_id, doc, job, e):
+                    raise
     finally:
         logger.info("[ingestion] Disposing database engine for document_id=%s", document_id)
         await engine.dispose()

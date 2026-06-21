@@ -1,8 +1,12 @@
+import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.ingestion import (
+    STATUS_ERROR,
     _build_chunk_embedding_input,
     _build_document_context,
+    _handle_ingestion_error,
     _infer_section_title,
     _pages_for_span,
     _safe_filename,
@@ -78,3 +82,52 @@ def test_build_chunk_embedding_input_includes_llm_context_when_present():
 
     with_empty_llm_context = _build_chunk_embedding_input(context, None, "Testo del chunk.", "")
     assert with_empty_llm_context == "Documento: manuale.pdf\n\nTesto del chunk."
+
+
+def test_handle_ingestion_error_aborts_cleanly_when_document_deleted():
+    # Documento cancellato concorrentemente: la query di esistenza post-rollback torna None
+    # -> uscita pulita (False), nessun cleanup Qdrant/Neo4j, nessun merge/commit, nessun retry.
+    db = AsyncMock()
+    scalar_result = MagicMock()
+    scalar_result.scalar_one_or_none.return_value = None
+    db.execute.return_value = scalar_result
+
+    with patch("app.services.ingestion._cleanup_document_artifacts", new=AsyncMock()) as cleanup:
+        should_raise = asyncio.run(
+            _handle_ingestion_error(db, "doc-1", MagicMock(), MagicMock(), RuntimeError("boom"))
+        )
+
+    assert should_raise is False
+    db.rollback.assert_awaited_once()
+    cleanup.assert_not_called()
+    db.merge.assert_not_called()
+    db.commit.assert_not_called()
+
+
+def test_handle_ingestion_error_marks_error_and_propagates_when_document_exists():
+    # Documento ancora presente: comportamento storico -> cleanup, mark error su doc+job,
+    # commit, ritorna True (propaga -> retry Celery).
+    db = AsyncMock()
+    scalar_result = MagicMock()
+    scalar_result.scalar_one_or_none.return_value = MagicMock()
+    db.execute.return_value = scalar_result
+
+    merged = MagicMock()
+    merged_job = MagicMock()
+    db.merge.side_effect = [merged, merged_job]
+
+    with patch("app.services.ingestion._cleanup_document_artifacts", new=AsyncMock()) as cleanup:
+        should_raise = asyncio.run(
+            _handle_ingestion_error(db, "doc-1", MagicMock(), MagicMock(), RuntimeError("boom"))
+        )
+
+    assert should_raise is True
+    db.rollback.assert_awaited_once()
+    cleanup.assert_awaited_once_with(db, "doc-1")
+    assert db.merge.await_count == 2
+    db.commit.assert_awaited_once()
+    assert merged.status == STATUS_ERROR
+    assert merged.error_message == "boom"
+    assert merged_job.status == STATUS_ERROR
+    assert merged_job.error_code == "RuntimeError"
+    assert merged_job.progress == 100
