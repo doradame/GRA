@@ -25,7 +25,7 @@ L’assistente diventa esperto della knowledge base che gli viene fornita: manua
 2. Esegui l'installer interattivo:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/graph-rag-assistant/graph-rag-assistant/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/doradame/GRA/main/scripts/install.sh | bash
 ```
 
 Oppure, se hai gia' il repository sul server:
