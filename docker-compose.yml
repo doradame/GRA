@@ -46,7 +46,7 @@ services:
       - AUTO_CREATE_TABLES=${AUTO_CREATE_TABLES:-true}
       - RECONCILE_BM25_ON_STARTUP=${RECONCILE_BM25_ON_STARTUP:-true}
       - RECONCILE_BM25_TOLERANCE=${RECONCILE_BM25_TOLERANCE:-5}
-      - FRONTEND_ADMIN_URL=https://admin.matamune.4nk.eu
+      - FRONTEND_ADMIN_URL=https://${DOMAIN_ADMIN}
       - LLM_TEMPERATURE=0.1
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -158,7 +158,7 @@ services:
       context: ./admin
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: https://api.matamune.4nk.eu
+        VITE_API_URL: https://${DOMAIN_API}
     container_name: igr-admin
     restart: unless-stopped
     expose:
