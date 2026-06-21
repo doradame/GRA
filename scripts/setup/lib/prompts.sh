@@ -4,6 +4,18 @@
 # shellcheck source=colors.sh
 source "$(dirname "${BASH_SOURCE[0]}")/colors.sh"
 
+# _trim: removes leading and trailing whitespace from a string.
+# Arguments:
+#   $1 - string to trim
+# Returns:
+#   trimmed string on stdout
+_trim() {
+    local str="$1"
+    str="${str#"${str%%[![:space:]]*}"}"
+    str="${str%"${str##*[![:space:]]}"}"
+    printf '%s' "$str"
+}
+
 # ask_required: reads a mandatory string value from the user.
 # Arguments:
 #   $1 - prompt message to display
@@ -14,6 +26,7 @@ ask_required() {
     local value=""
     while [[ -z "$value" ]]; do
         read -rp "$prompt: " value
+        value=$(_trim "$value")
         if [[ -z "$value" ]]; then
             log_error "Valore obbligatorio."
         fi

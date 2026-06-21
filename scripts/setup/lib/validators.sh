@@ -19,5 +19,8 @@ is_valid_openai_key() {
 
 is_valid_resend_key() {
     local key="$1"
-    [[ "$key" =~ ^re_[a-zA-Z0-9]{20,}$ ]]
+    # Resend API keys start with "re_" followed by a base64-like token.
+    # The token length varies, so we allow alphanumerics, underscores and
+    # dashes with a conservative minimum length.
+    [[ "$key" =~ ^re_[A-Za-z0-9_-]{10,}$ ]]
 }
