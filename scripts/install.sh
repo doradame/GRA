@@ -25,6 +25,7 @@ PROJECT_DIR=""
 
 source "$SETUP_DIR/lib/colors.sh"
 source "$SETUP_DIR/lib/prompts.sh"
+source "$SETUP_DIR/lib/state.sh"
 
 trap 'log_error "Setup interrotto al passo ${CURRENT_STEP:-iniziale}."; exit 1' ERR
 
@@ -32,6 +33,56 @@ load_module() {
     local module="$1"
     source "$SETUP_DIR/$module"
 }
+
+# Decide which steps to skip based on a previously saved state.
+skip_input=false
+skip_secrets=false
+skip_config=false
+skip_data=false
+skip_launch=false
+skip_admin=false
+
+if has_state; then
+    log_warn "Trovata configurazione precedente (ultimo step completato: ${INSTALLER_STEP:-inizio})."
+    if ask_yes_no "Vuoi riprendere da dove eri rimasto?" "y"; then
+        load_state
+        case "${INSTALLER_STEP:-}" in
+            input)
+                skip_input=true
+                ;;
+            secrets)
+                skip_input=true
+                skip_secrets=true
+                ;;
+            config)
+                skip_input=true
+                skip_secrets=true
+                skip_config=true
+                ;;
+            data)
+                skip_input=true
+                skip_secrets=true
+                skip_config=true
+                skip_data=true
+                ;;
+            launch)
+                skip_input=true
+                skip_secrets=true
+                skip_config=true
+                skip_data=true
+                skip_launch=true
+                ;;
+            admin)
+                skip_input=true
+                skip_secrets=true
+                skip_config=true
+                skip_data=true
+                skip_launch=true
+                skip_admin=true
+                ;;
+        esac
+    fi
+fi
 
 CURRENT_STEP="00"
 load_module "00-preamble.sh"
@@ -47,32 +98,51 @@ run_clone
 
 cd "${PROJECT_DIR:-$(pwd)}"
 
-CURRENT_STEP="30"
-load_module "30-input.sh"
-run_input
+if ! $skip_input; then
+    CURRENT_STEP="30"
+    load_module "30-input.sh"
+    run_input
+    save_state input
+fi
 
-CURRENT_STEP="40"
-load_module "40-secrets.sh"
-run_secrets
+if ! $skip_secrets; then
+    CURRENT_STEP="40"
+    load_module "40-secrets.sh"
+    run_secrets
+    save_state secrets
+fi
 
-CURRENT_STEP="50"
-load_module "50-config.sh"
-run_config
+if ! $skip_config; then
+    CURRENT_STEP="50"
+    load_module "50-config.sh"
+    run_config
+    save_state config
+fi
 
-CURRENT_STEP="60"
-load_module "60-data.sh"
-run_data_dirs
+if ! $skip_data; then
+    CURRENT_STEP="60"
+    load_module "60-data.sh"
+    run_data_dirs
+    save_state data
+fi
 
-CURRENT_STEP="70"
-load_module "70-launch.sh"
-run_launch
+if ! $skip_launch; then
+    CURRENT_STEP="70"
+    load_module "70-launch.sh"
+    run_launch
+    save_state launch
+fi
 
-CURRENT_STEP="80"
-load_module "80-admin-user.sh"
-run_admin_users
+if ! $skip_admin; then
+    CURRENT_STEP="80"
+    load_module "80-admin-user.sh"
+    run_admin_users
+    save_state admin
+fi
 
 CURRENT_STEP="99"
 load_module "99-summary.sh"
 run_summary
 
+clear_state
 log_success "Setup completato con successo."

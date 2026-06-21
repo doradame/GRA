@@ -1,6 +1,7 @@
 .env
 *.env
 !.env.example
+.installer-state.env
 
 __pycache__/
 *.py[cod]
