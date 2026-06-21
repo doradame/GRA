@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import List, Optional
 from qdrant_client.http.exceptions import UnexpectedResponse
@@ -25,6 +26,39 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 VECTOR_SIZE = settings.embedding_dimensions
+
+# Ogni float di un dense vector occupa ~14 byte una volta serializzato in JSON (segno,
+# cifre, virgola). Stimare cosi (senza serializzare l'intero vector) basta per il
+# batching size-aware verso Qdrant; la stima tende a sovrastimare leggermente, il che e'
+# sicuro (sottostimare significherebbe ribattere nel limite 32 MiB di Qdrant).
+_JSON_FLOAT_BYTES = 14
+
+
+def _estimate_point_size(point: PointStruct) -> int:
+    """Stima approssimata dei byte del JSON di un PointStruct, per il batching size-aware.
+
+    Include dense vector, sparse vector (BM25 nativo) e payload. Il payload (testo del
+    chunk) viene serializzato per misurarne la dimensione reale; i vettori sono stimati
+    a partire dal numero di elementi. Conservativa: meglio flushare un batch prima.
+    """
+    size = (
+        len(json.dumps(point.payload, default=str).encode("utf-8"))
+        if point.payload
+        else 0
+    )
+
+    vector = point.vector
+    if isinstance(vector, dict):
+        for value in vector.values():
+            if isinstance(value, SparseVector):
+                # indici (int) + valori (float) della sparse BM25
+                size += len(value.indices) * 8 + len(value.values) * _JSON_FLOAT_BYTES
+            elif isinstance(value, (list, tuple)):
+                size += len(value) * _JSON_FLOAT_BYTES
+    elif isinstance(vector, (list, tuple)):
+        size += len(vector) * _JSON_FLOAT_BYTES
+
+    return size + 128  # envelope per point (id, field name, parentesi)
 
 
 class VectorStore:
@@ -115,11 +149,14 @@ class VectorStore:
     def upsert(self, points: List[PointStruct], batch_size: Optional[int] = None):
         if batch_size is None:
             batch_size = settings.qdrant_upsert_batch_size
+        max_bytes = settings.qdrant_max_request_bytes
 
         logger.info("[vector] Upserting %s points to collection %s", len(points), self.collection)
 
         # Retry solo su errori transitori: 5xx / 429 del server o errori di rete. I 4xx
-        # client (dati malformati) propagano subito (vedi core/retry.should_retry).
+        # client (dati malformati, incluso un payload oltre il limite di Qdrant)
+        # propagano subito (vedi core/retry.should_retry): ritentare lo stesso batch
+        # oversized fallirebbe sempre, quindi va risolto nel batching, non nel retry.
         def _is_transient(exc: BaseException) -> bool:
             if isinstance(exc, ConnectionError):
                 return True
@@ -134,19 +171,51 @@ class VectorStore:
                 what="qdrant upsert",
             )
 
-        if batch_size <= 0:
+        # Nessun batching richiesto (entrambi i limiti disattivati): utile nei test o su
+        # collection con payload controllati.
+        if batch_size <= 0 and max_bytes <= 0:
             _upsert(points)
-        else:
-            for i in range(0, len(points), batch_size):
-                batch = points[i : i + batch_size]
-                logger.info(
-                    "[vector] Upserting batch %s-%s of %s points",
-                    i + 1,
-                    i + len(batch),
-                    len(points),
-                )
-                _upsert(batch)
+            logger.info("[vector] Upsert complete")
+            return
 
+        # Batching size-aware: un batch accumula punti finche' non supera NE' il limite
+        # di conteggio (batch_size) NE' quello di byte stimati (max_bytes). Senza il
+        # limite sui byte, un documento grande produceva un singolo batch > 32 MiB che
+        # Qdrant rifiutava con 400 (vedi qdrant_max_request_bytes).
+        batch: List[PointStruct] = []
+        batch_bytes = 0
+        batch_index = 0
+
+        def _flush() -> None:
+            nonlocal batch, batch_bytes, batch_index
+            if not batch:
+                return
+            batch_index += 1
+            logger.info(
+                "[vector] Upserting batch %s (%s points, ~%.1f MiB)",
+                batch_index,
+                len(batch),
+                batch_bytes / (1024 * 1024),
+            )
+            _upsert(batch)
+            batch = []
+            batch_bytes = 0
+
+        for point in points:
+            size = _estimate_point_size(point)
+            # Se aggiungere questo punto fa superare uno dei due limiti, svuota prima il
+            # batch corrente. Un punto da solo oltre max_bytes viene comunque inviato
+            # (non e' splittabile): se supera anche il limite hard di Qdrant sara' un 400
+            # distinto, da risolvere alzando max_request_size_mb o riducendo la chunk size.
+            if batch and (
+                (max_bytes > 0 and batch_bytes + size > max_bytes)
+                or (batch_size > 0 and len(batch) >= batch_size)
+            ):
+                _flush()
+            batch.append(point)
+            batch_bytes += size
+
+        _flush()
         logger.info("[vector] Upsert complete")
 
     def search(self, vector: List[float], top_k: int = 10, filter=None) -> List[dict]:
@@ -252,7 +321,7 @@ class VectorStore:
 
     def reset_collection(self):
         logger.warning("[vector] Resetting collection %s", self.collection)
-        self.client.delete_collection(collection_name=self.collection)
+        self._client.delete_collection(collection_name=self.collection)
         self._ensure_collection()
         logger.warning("[vector] Collection %s reset complete", self.collection)
 

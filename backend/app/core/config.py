@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     qdrant_dense_vector_name: str = "dense"
     qdrant_sparse_vector_name: str = "text_sparse"
     qdrant_upsert_batch_size: int = 500
+    # Limite morbido sui byte (JSON serializzato) di un singolo batch di upsert verso
+    # Qdrant. Qdrant rifiuta le richieste oltre max_request_size_mb (default 32 MiB =
+    # 33554432 byte) con HTTP 400: con dense vector da 3072 dimensioni + sparse BM25 +
+    # testo del chunk per point, un batch da 500 punti supera agevolmente quel limite su
+    # documenti grandi (vector_store.upsert fa batching size-aware oltre che a conteggio).
+    # 16 MiB lascia margine per overhead JSON e per la stima approssimata dei byte.
+    qdrant_max_request_bytes: int = 16 * 1024 * 1024
     minio_endpoint: str = "minio:9000"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
