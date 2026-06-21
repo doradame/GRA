@@ -5,24 +5,29 @@ set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/colors.sh"
 
-create_backend_admin() {
-    local api_url="https://${DOMAIN_API}/api/v1/auth/register"
-
-    local health_url="https://${DOMAIN_API}/api/v1/health"
-    log_info "Attesa disponibilita' backend su $health_url..."
-    local max_attempts=24
+# _wait_for_backend: waits until the FastAPI docs endpoint responds.
+# /docs is public and is a reliable signal that the backend is ready.
+_wait_for_backend() {
+    local docs_url="https://${DOMAIN_API}/docs"
+    log_info "Attesa disponibilita' backend su $docs_url..."
+    local max_attempts=60
     local attempt=0
-    local healthy=0
     while [[ $attempt -lt $max_attempts ]]; do
-        if curl -sf "$health_url" >/dev/null 2>&1; then
-            healthy=1
-            break
+        if curl -sf "$docs_url" >/dev/null 2>&1; then
+            log_success "Backend disponibile."
+            return 0
         fi
         attempt=$((attempt + 1))
         sleep 5
     done
-    if [[ "$healthy" -ne 1 ]]; then
-        log_warn "Backend non risponde dopo 2 minuti."
+    log_warn "Backend non risponde dopo 5 minuti."
+    return 1
+}
+
+create_backend_admin() {
+    local api_url="https://${DOMAIN_API}/api/v1/auth/register"
+
+    if ! _wait_for_backend; then
         log_warn "Crea l'utente manualmente da: https://${DOMAIN_ADMIN}"
         return
     fi
